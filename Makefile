@@ -1,16 +1,21 @@
 CC=mips-unknown-linux-gnu-gcc
 MARCH=r3000
 CFLAGS=-march=${MARCH}
-HELPER=./5268ac_toolchain
+DOCKER_IMAGE=5268ac
+HELPER=./$(DOCKER_IMAGE)
 ROOT_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 
-all: clean test
+all: docker toolchain test libtest
 
 docker:
-	docker build $(ROOT_DIR)
+	DEFAULT_DOCKCROSS_IMAGE=$(DOCKER_IMAGE) docker build -t $(DOCKER_IMAGE) $(ROOT_DIR)
+
+vanilla_toolchain:
+	docker run -i dockcross/linux-mips >$(HELPER)
+	chmod +x $(HELPER)
 
 toolchain:
-	docker run -i dockcross/linux-mips >$(HELPER)
+	docker run -i $(DOCKER_IMAGE) >$(HELPER)
 	chmod +x $(HELPER)
 
 test:
@@ -18,5 +23,12 @@ test:
 	$(HELPER) $(CC) $(CFLAGS) test.c -o test
 	$(HELPER) qemu-mips-static test
 
+libtest:
+	[ -f $(HELPER) ] || $(MAKE) toolchain 
+	$(HELPER) $(CC) $(CFLAGS) libtest.c -o libtest -L./current/_att-5268-11.14.1.533857_prod_lightspeed-install.pkgstream.extracted/_18AE08E.extracted/cpio-root/lib -Ilibc
+	$(HELPER) qemu-mips-static libtest
+
 clean:
-	[ -e test ] && rm test
+	[ -f $(HELPER) ] && rm $(HELPER)
+	[ -f test ] && rm test
+	[ -f libtest ] && rm libtest
