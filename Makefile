@@ -25,7 +25,7 @@ test:
 
 libtest:
 	[ -f $(HELPER) ] || $(MAKE) toolchain 
-	$(HELPER) $(CC) $(CFLAGS) libtest.c -o libtest -L./current/_att-5268-11.14.1.533857_prod_lightspeed-install.pkgstream.extracted/_18AE08E.extracted/cpio-root/lib -Ilibc
+	$(HELPER) $(CC) $(CFLAGS) libtest.c -o libtest -L/firmware/_install.pkgstream.extracted/_18AE08E.extracted/cpio-root/lib -Ilibc
 	$(HELPER) qemu-mips-static libtest
 
 clean:
