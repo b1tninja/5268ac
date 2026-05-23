@@ -41,9 +41,8 @@ htmlcov/
 !.vscode/extensions.json
 !.vscode/settings.json
 
-# Cursor: keep project skills; ignore plans and local state
-.cursor/plans/
-.cursor/projects/
+# Cursor (local IDE state, plans, skills copies)
+.cursor/
 
 # --- Ghidra local project (not portable; regenerate from ELFs) ---
 *.gpr
