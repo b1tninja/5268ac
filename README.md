@@ -6,32 +6,62 @@ This repository collects research and tooling related to **AT&T-branded Pace / A
 
 **Generated artifacts** default under **`output/`** at the repo root (override with env **`OUTPUT_DIR`**). See **`opentl.paths`**.
 
-## Python packages (repo layout)
+## Install
 
-| Package | Role |
-|---------|------|
-| **`hexdumpy`** | Domain-agnostic page hexdump (`PageView`, row formatting). |
-| **`unand`** | SoC-facing **NAND data plane**: dump layout, **128 MiB** logical main plane, geometry, optional **4 MiB** spare stream; **`unand.mtd`** parses **`mtdparts=`** on that plane only. |
-| **`uboot`** | Offline **`bootargs`** / simple **`bootcmd`** parsing; extracts the **`mtdparts=`** token and defers layout math to **`unand.mtd`**. |
-| **`opentl`** | OpenTL on **`tlpart`**: MTD-partition-relative main bytes + spare-sidecar replay (**BBM**, `opentla4` extract, pipeline helpers). **`flash_layout`** resolves **`mtdparts`** (**U-Boot env v1** on the logical plane, then **`mtd-scan`**) for **`partition-map`** / **`carve`**. |
-| **`lib2spy`** | 2WIRE `.pkgstream` parse/verify/TLV (`python -m lib2spy`). |
-| **`corpus`** | SquashFS corpus SQLite index + grep (`python -m corpus`); `tools/squashfs_*` wrap it. |
+From the repo root:
 
-Install editable from repo root: `pip install -e ".[dissect]"` (see root **`pyproject.toml`**).
+```bash
+pip install -e ".[dissect,shell,eapol,dev]"
+```
 
-Documentation is split into focused notes under **`reference/`**:
+See **[pyproject.toml](pyproject.toml)** for optional extras (`dissect` for ext2/squashfs, `shell` for `paceflash shell` on Windows, `eapol` for PKCS#12 tooling).
+
+## Subprojects
+
+Offline stack (bottom → top): **[reference/layers_unand_uboot_opentl_boardfs_paceflash.md](reference/layers_unand_uboot_opentl_boardfs_paceflash.md)** — mermaid map of how packages connect.
+
+| Package | Source | Documentation |
+|---------|--------|----------------|
+| **`unand`** | [`unand/`](unand/) | **[unand/README.md](unand/README.md)** — NAND dump layout, **128 MiB** logical data plane, **`mtdparts=`** on main bytes only |
+| **`uboot`** | [`uboot/`](uboot/) | **[reference/boot_and_storage.md](reference/boot_and_storage.md)** — boot chain; **[reference/boot_environment_trust_eng.md](reference/boot_environment_trust_eng.md)** — env / `bootcmd` / paramtool |
+| **`opentl`** | [`opentl/`](opentl/) | **[reference/opentl.md](reference/opentl.md)** — OpenTL / `opentla*` / U-Boot paths; **[opentl/driver/README.md](opentl/driver/README.md)** — driver-facing helpers |
+| **`boardfs`** | [`boardfs/`](boardfs/) | **[reference/boardfs.md](reference/boardfs.md)** — `FsRegistry`, BBM attach, ext2 assembly |
+| **`paceflash`** | [`paceflash/`](paceflash/) | **[reference/paceflash.md](reference/paceflash.md)** — CLI: `python -m paceflash` (`ls`, `cat`, `shell`, `paramtool`, …) |
+| **`lib2spy`** | [`lib2spy/`](lib2spy/) | **[reference/pkgstream.md](reference/pkgstream.md)** — `.pkgstream` / LIB2SP layout; **[reference/pkgstream_security.md](reference/pkgstream_security.md)** — verify / trust |
+| **`reference/`** | [`reference/`](reference/) | **[reference/README.md](reference/README.md)** — full RE index (Ghidra MCP, security, CMDB, HTTP, …) |
+
+### Other Python packages
+
+| Package | Source | Documentation |
+|---------|--------|----------------|
+| **`binwalker`** | [`binwalker/`](binwalker/) | **[binwalker/README.md](binwalker/README.md)**; command catalog in **[reference/tools.md](reference/tools.md)** |
+| **`corpus`** | [`corpus/`](corpus/) | SquashFS SQLite index — **`python -m corpus`**; see **[reference/tools.md](reference/tools.md)** |
+| **`hexdumpy`** | [`hexdumpy/`](hexdumpy/) | Page-oriented hexdump helpers (used by other tools) |
+| **`acspy`** | [`acspy/`](acspy/) | **[reference/acspy.md](reference/acspy.md)** — CWMP / ACS client experiments |
+
+### Hardware
+
+| Item | Path |
+|------|------|
+| **MEC1-108-02** front-panel debug breakout | **[MEC1-108-02/README.md](MEC1-108-02/README.md)** — Samtec socket PCB, gerbers, console cable photos |
+
+## Reference docs (starting points)
+
+Curated entry points under **[reference/](reference/)** (full list: **[reference/README.md](reference/README.md)**):
 
 | Document | Contents |
 |----------|----------|
-| **[reference/issue.md](reference/issue.md)** | **OpenTL** and **`tlpart`**: linear-read limits, **anchor-based** mapping, **pkgstream as corpus** (not identical golden), recovery-vs-installed caveat, **`corpus_interpretation`** in reports. |
-| **[reference/hardware.md](reference/hardware.md)** | Platform context, **MTD** patterns, **NAND** / **`BCMNAND`** geometry, **`BCMNAND`** vs upstream **`brcmnand`**, serial-log hardware excerpts. |
-| **[reference/firmware.md](reference/firmware.md)** | **`pkgstreams`** CDN layout, downloaded **`firmware_11.5.1.532678/`** bundle, **Linux 3.4.11-rt19** baseline, **`fwupgrade.txt`** boot and upgrade trace. |
-| **[reference/tools.md](reference/tools.md)** | **`binwalker`** workflows: **`nand-translate`** / **`nand-spare-extract`** / **`carve --nand-data-mode`** for **5268-class** TSOP packing, **`partition-map`**, OpenTL **`tl-*`** probes, **`pkgstream-slices`** + manifests, **`mtd_parts/`** binwalk summary, repository map, legal / ethics. |
-| **[reference/boot_and_storage.md](reference/boot_and_storage.md)** | **Boot chain** (ROM → U-Boot → Linux **`bootargs`**) and **storage / MTD stack** mermaid diagrams; **`unand` / `uboot` / `opentl` / `binwalker`** offline map. |
-| **[reference/kernel_python_regions.md](reference/kernel_python_regions.md)** | **`#region kernel: 0x…`** / **`#endregion`** markers in Python: Ghidra EAs, `kernel_adjacent` glue, and how they map to [ghidra_boardfs_bbm_readpath.md](reference/ghidra_boardfs_bbm_readpath.md) / [opentl_kernel_ghidra.md](reference/opentl_kernel_ghidra.md). |
+| **[reference/issue.md](reference/issue.md)** | **OpenTL** and **`tlpart`**: anchor-based mapping, pkgstream as corpus, recovery vs installed skew |
+| **[reference/hardware.md](reference/hardware.md)** | Platform, **MTD**, **BCMNAND** geometry |
+| **[reference/firmware.md](reference/firmware.md)** | Carrier bundles, **Linux 3.4.11-rt19**, **`fwupgrade.txt`** boot trace |
+| **[reference/tools.md](reference/tools.md)** | **`binwalker`**, **`nand-translate`**, **`partition-map`**, OpenTL **`tl-*`**, corpus grep |
+| **[reference/boot_and_storage.md](reference/boot_and_storage.md)** | ROM → U-Boot → Linux; storage stack diagrams |
+| **[reference/kernel_python_regions.md](reference/kernel_python_regions.md)** | `#region kernel: 0x…` markers vs Ghidra exports |
 
-## References
+Security / operator surface (also in the index): **[reference/security.md](reference/security.md)**, **[reference/console_uart_disable.md](reference/console_uart_disable.md)**, **[reference/eapol_8021x_p12.md](reference/eapol_8021x_p12.md)**.
+
+## External links
 
 - [Pace 5268AC — WikiDevi (wi-cat.ru mirror)](https://wikidevi.wi-cat.ru/Pace_5268AC)
 
-Start with **[reference/issue.md](reference/issue.md)** for **OpenTL** / **`tlpart`** motivation and corpus strategy, or **[reference/tools.md](reference/tools.md)** for commands first.
+**Where to start:** **[reference/issue.md](reference/issue.md)** for OpenTL / **`tlpart`** motivation, **[reference/tools.md](reference/tools.md)** for commands, or **[reference/layers_unand_uboot_opentl_boardfs_paceflash.md](reference/layers_unand_uboot_opentl_boardfs_paceflash.md)** for the Python package stack.
