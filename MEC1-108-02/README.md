@@ -14,6 +14,7 @@ Official product page (example vertical part): [Samtec MEC1-108-02-F-D-A](https:
 | [`gbr/`](gbr/) | **Gerber + drill** outputs for ordering PCBs (see [Fabrication (gerbers)](#fabrication-gerbers) below). |
 | [`MEC1-108-2-breakout-bare-pcb.png`](MEC1-108-2-breakout-bare-pcb.png) | **2D** board render — bare PCB (no socket). |
 | [`MEC1-108-2-breakout-assembled.png`](MEC1-108-2-breakout-assembled.png) | **3D** board render — populated with **Samtec MEC1-108-02** socket. |
+| [`MEC1-108-2-breakout-console-cable.png`](MEC1-108-2-breakout-console-cable.png) | **Photo** — manufactured breakout with ribbon cable at the **5268AC** front debug port. |
 
 ## Board photos
 
@@ -26,6 +27,12 @@ Official product page (example vertical part): [Samtec MEC1-108-02-F-D-A](https:
 ![MEC1-108-2 breakout with MEC1 socket](MEC1-108-2-breakout-assembled.png)
 
 Silk on the board identifies the **MEC1-108-02** land pattern. On each breakout row, the **square** pad marks **pin 1**; use the Samtec drawing in `mec1.pdf` together with your system documentation when assigning signals (this repo does not ship a verified netlist for the gateway edge fingers).
+
+**Manufactured console cable** (breakout + ribbon to a UART adapter; **MEC1-108-02** silk visible; **PACE 5268AC** motherboard in background):
+
+![MEC1-108-2 breakout console cable on PACE 5268AC](MEC1-108-2-breakout-console-cable.png)
+
+The **10-pin shrouded header** on the breakout mates the ribbon; the **MEC1** fingers engage the gateway’s front-panel edge opening so you can reach **U-Boot** and the Linux serial console without opening the case (see [`reference/console_uart_disable.md`](../reference/console_uart_disable.md) and [`reference/boot_environment_trust_eng.md`](../reference/boot_environment_trust_eng.md)).
 
 ## Fabrication (gerbers)
 
