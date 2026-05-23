@@ -126,9 +126,9 @@ Use **`-o`** for binary output on Windows; avoid redirecting **`cat`** with Powe
 
 ---
 
-## Ethics and scope
+## Legal notice
 
-Work here is intended for **devices you own** or **explicitly authorized** lab use. Extracted CMDB, PKCS#12, and HTTP credentials are **sensitive**—see **[`reference/cmdb_security.md`](reference/cmdb_security.md)** before publishing logs or JSON. Tooling legal notes: **[`reference/tools.md`](reference/tools.md)**.
+This project is for **security testing and research only**—on hardware you **own** or are **authorized** to analyze. See **[LEGAL.md](LEGAL.md)** for purpose, **17 U.S.C. § 1201 (DMCA)** scope, and attestations that the repository does **not** distribute circumvention technology, proprietary firmware, or other copyrighted material. Sensitive extracts belong in gitignored **`output/`**; see **[`reference/cmdb_security.md`](reference/cmdb_security.md)**.
 
 ---
 
