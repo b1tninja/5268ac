@@ -54,19 +54,24 @@ These routines align with **operator “subscriber code” / “access code”**
 
 **`board_param_get`** @ **`0x00014848`** delegates to an internal **`param_get`** then checks buffer size (**`0x22`** if too small — **`EINVAL`**-style). This is the **structured board-parameter database** (opened by **`board_param_open`**, which **`read()`**s a blob and validates length — file-backed store).
 
+Internally the opened blob is scanned as **`key=value`** lines (**`param_get`** @ **`0x00014040`** — match key prefix, value after **`=`**). WAN **802.1X** client PKCS#12 lives here as **`lightspeed_p12`** / **`device_p12`** (base64 values). Password for decryption: **`board_key_pkcs12_password`** @ **`0x00013edc`** — **`snprintf(buf, "%s%s%s", devkey, salt, serial)`** with fixed salt **`e289d70ad34e0683fe0152da271475d587fb12f1`**. Consumed by **`librgw_compat`**: **`tw_ulib_sec_find_pkcs12`**, **`librgw_sec_get_shroud_key`** (see [`eapol_8021x_p12.md`](eapol_8021x_p12.md)).
+
 ### Integrity
 
 - **`uboot_crc32`** — CRC32 helper (image / blob integrity; often paired with **U-Boot environment** or **manufacturing blobs**).
 
 ## How this relates to **NAND**
 
+**Authoritative map:** [`board_params_nand.md`](board_params_nand.md) — factory **`sn=`** block in **loader** MTD, sysfs, CMDB mirrors.
+
 What we can state from **`libboard`** alone:
 
 1. **No direct `ioctl(MEMREAD)` / MTD raw access** appears in the **import table** for this SO — reads use **`open64`**, **`read`**, **`stat64`**, **`statvfs64`**, **`sysinfo`** — i.e. **POSIX file semantics**.
-2. On this class of gateway, **writable state** (including paths like **`/rwdata/...`** referenced elsewhere in the repo — see **`cm_cmdb.md`** / **`fwupgrade.txt`**) normally lives on **UBIFS** or similar **over NAND MTD** partitions.
-3. **`pace_tl_map.json`** and **`opentl_kernel_ghidra.md`** describe **OpenTL / BBM** and **carving** raw dumps — use those when correlating **offline NAND images** to **runtime paths**, not **`libboard`** strings (paths are not reliably visible as plain ASCII in the **`libboard`** **`strings`** sweep; they are typically **GP-relative pointers** in MIPS).
+2. **Primary serial source** is the **factory manufacturing block** in NAND **loader** (ASCII `sn=38161N043704` at logical **`~0x1FF84`** on PACE dumps — see **`flash strings.txt`**), then exposed via **`board_info_serialnumber`** and **`/sys/module/board/parameters/*`**.
+3. **CMDB** (`/rwdata/cm`) stores **`connreq_username`** = `00D09E-<serial>` and **keycode** — **fleet/provisioned** secrets, **not** a second copy of the factory `sn=` line for CWMP DeviceId.
+4. **`pace_tl_map.json`** and **`opentl_kernel_ghidra.md`** describe **OpenTL / BBM** carving; **`output/nand_rwdata_cm.md`** locates **`/rwdata/cm`** on UBIFS inside **`tlpart`**.
 
-**Working model:** **NAND → MTD → UBIFS (or JFFS2) → VFS path → `libboard` `open`/`read`.** To recover **exact pathnames** for serial/access templates, use **runtime evidence** (**`strace`** on **`httpd`** calling **`board_info_serialnumber`**) or **dump `.rodata`** in Ghidra at the pointers referenced from **`board_info_*`** (candidate path table).
+**Working model:** **NAND loader (factory) → boot copy / board module → VFS paths → `libboard` `open`/`read`.** CMDB is a **separate** tree under **`/rwdata/cm`**. Recover exact pathnames via **`strace`** on **`board_info_serialnumber`** or Ghidra rodata @ **`0x00011f84`**.
 
 ## Hypothesis: access-code generation chain
 
@@ -85,6 +90,8 @@ Not proven end-to-end in one binary, but consistent with imports and decompilati
 
 ## See also
 
+- [`eapol_8021x_p12.md`](eapol_8021x_p12.md) — **`lightspeed_p12`** / **`device_p12`**, EAPOL in **`lmd`**, CA pkgstream
+- [`board_params_nand.md`](board_params_nand.md) — factory **`sn=`** / **`mac=`** in loader NAND, CMDB mirrors, sysfs
 - [`cm_cmdb.md`](cm_cmdb.md) — CMDB, **`cmshmem_*`**, **`tw_ulib_pwd_*`**, writable **`/rwdata`** hints.
 - [`httpd_endpoints.md`](httpd_endpoints.md) — web surface.
 - [`pace_tl_map.json`](pace_tl_map.json) — NAND / OpenTL geometry for offline dumps.

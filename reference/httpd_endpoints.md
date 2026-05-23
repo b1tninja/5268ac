@@ -4,6 +4,8 @@
 **Config corpus:** `work_tl_crc/pkgstream_dissect_corpus/att-5268-11.5.1.532678_prod_lightspeed-install_squashfs_0x01993b45_b9e08402/conf/`  
 **Binary:** `/usr/bin/httpd` (Ghidra program name `httpd`, MIPS BE).
 
+End-to-end **`.pkgstream` → `pkgd` → `lib2sp`** wiring (FIFO XCI, **`libpkg_client`**, **`cwmd`**, evidence JSON): **[`firmware_upgrade_process.md`](firmware_upgrade_process.md)** §1.1 and §3.
+
 This document merges **`conf/*.xml` endpoint definitions** with **Ghidra-derived dispatch** in `httpd`. Additional `PAGE=` names may exist only in XSLT under `/mnt/web/ui/newxsl` (not exhaustively listed here).
 
 ---

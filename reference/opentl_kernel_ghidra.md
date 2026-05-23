@@ -2,7 +2,7 @@
 
 This document records **reverse-engineering findings** from Ghidra on the **`drivers/mtd/opentl`** stack (MIPS **Linux 3.4.x** image matching **`fwupgrade.txt`**). **Function names** follow **`…_ghidra_m00_kernel.kallsyms.txt`** / ELF **`symtab`** (same KSEG0 addresses as legacy **`FUN_8028…`** Ghidra auto-names). Addresses are **KSEG0** for this **`…80458130`** kernel member unless noted.
 
-**Related:** **[issue.md](issue.md)** (strategy, BBM tooling), **[opentl.md](opentl.md)** (boot/U-Boot layout, **`opentla*`** diagrams), **[prom_init_ghidra.md](prom_init_ghidra.md)** (BCM63xx **`prom_init`** before **`opentl_add_mtd`**), **[tools.md](tools.md)** (`tl-bbm`, `tl-extract`, `vmlinux-to-elf`).
+**Related:** **[issue.md](issue.md)** (strategy, BBM tooling), **[opentl.md](opentl.md)** (boot/U-Boot layout, **`opentla*`** diagrams), **[prom_init_ghidra.md](prom_init_ghidra.md)** (BCM63xx **`prom_init`** before **`opentl_add_mtd`**), **[tools.md](tools.md)** (`tl-bbm`, `tl-extract`, `vmlinux-to-elf`), **[ghidra_tldisk_partition.md](ghidra_tldisk_partition.md)** (`tldisk_partition` / `parse_bsd` listing), **[boardfs.md](boardfs.md)** (offline MTD + TL + UBI hints), **[paceflash.md](paceflash.md)** (`/etc/fstab` via **`paceflash.fstab`**), **[kernel_python_regions.md](kernel_python_regions.md)** (Python `#region kernel: 0x…` ↔ these addresses).
 
 **Notebook refresh (May 2026):** **§2–§11** use **kernel symbol names** from **`kallsyms`** (see **`binwalker/scripts/kallsyms_replace_fun_in_md.py`** to regenerate). **`extract_ghidra_fun.py`** / **`.bin.c`** exports may still show **`FUN_8028…`** until re-exported from Ghidra with applied symbols.
 
@@ -110,7 +110,7 @@ Write/delete/fold:
 
 - Arithmetic uses **`0x200` (512)** for memcpy sizes → **logical sector size** matches U-Boot/OpenTL **512-byte sectors**.
 - **`*(uint *)(ctx + 0xb0)`** participates in **`opentl write: bad IO size %d/%d`** together with **`0x200`** → treat **`+0xb0`** as **page (or I/O) size in bytes** once confirmed from probe code.
-- **`*(int *)(ctx + 0xec) + 0x1c`** (via nested pointer) adds a **base** to **`param_4 / block_granularity`** → likely **partition base virtual block** or similar.
+- **`*(int *)(ctx + 0xec) + 0x1c`** (via nested pointer) adds a **base** to **`param_4 / sector_size`** when forming the **virtual page index** for **`ntl_access_pages`** — **partition base** for **`opentla1`…`opentla4`** vs whole-disk **`opentla0`**. Full coordinate-space breakdown + **`CBLKMAP`** accumulation: **[ghidra_opentla4_disk_layout_mcp.md](ghidra_opentla4_disk_layout_mcp.md)**.
 - **`*(void **)(ctx + 0x78)`** — bounce / **page buffer** for partial operations.
 
 **Debug branch:** When verbosity **`> 2`**, calls printk **`OPENTL: access page=%d:%d to %d:%d`** with computed block/page indices.
@@ -129,8 +129,8 @@ Decompilation targets **`att-5268-11.5.1.532678_prod_lightspeed-install_uimage_0
 | **`opentl_writesectors`** | **`0x80286bf0`** | **`opentl_accesssectors(..., 2)`**. |
 | **`opentl_readsectors`** | **`0x80286c10`** | **`opentl_accesssectors(..., 1)`**. |
 | **`opentl_add_mtd`** | **`0x80286c30`** | MTD notifier: type **`4`** (NAND), name **`tlpart`**, **`~0x80d0`**-byte private, **`__kmalloc(mtd->writesize)`** page buffer, **`writesize == 0x200`** branch sets erase **`shift`** (e.g. **9** for 512-page erase blocks), **`opentl_dev_setup`**, **`ntl_mount`**, geometry / **`add_mtd_blktrans_dev`**. |
-| **`opentl_ioctl`** | **`0x80287858`** | **`cmd == -0x7feb11fe`**: user **CBLKMAP**-style buffer → **`__copy_user`** → **`process_map`** (partition map into **`ctx+0xa0`** context), scaled by **`*(ctx+0x88)`** vs partition sector count. |
-| **`opentl_dev_page_write`** | **`0x80287a60`** | Build chip linear offset from **block + page** (`param_3[6]`/`[7]` shifts, **`mtd->size-1`** mask); **`mtd->_write`** @ **`mtd+0x6c`** if **`MTD_WRITEABLE`**. |
+| **`opentl_ioctl`** | **`0x80287858`** | **`cmd == -0x7feb11fe`**: **CBLKMAP** — kmalloc bitmap, **`process_map`** on **`inner = ctx+0xa0`**; **`process_map`** arg built as **`((*(partition+4)) << 9) / *(ctx+0x88) + *(ushort *)(*(ctx+0xec) + 0x1c)`** (running **virt-page base** — see **`decompile_function`** and [ghidra_opentla4_disk_layout_mcp.md](ghidra_opentla4_disk_layout_mcp.md) §2.2). |
+| **`opentl_dev_page_write`** | **`0x80287a60`** | Build chip linear offset from **block + page** (`param_3[6]`/`[7]` shifts, **`*(mtd+0x14)-1`** mask); **`param_3[0x12]`** is **`struct mtd_info *`**; **`mtd->_write`** @ **`mtd+0x6c`** when **`MTD_WRITEABLE`** and **`_write` non-null**. **Installed** at **`mtd_priv+0x54`** by **`opentl_dev_setup`**; **`ntl_write_verify_phy_page`** invokes **`ctx+0x54`** **before** this reaches **`mtd->_write`** — see [`ghidra_nand_layout_write_path_mcp.md`](ghidra_nand_layout_write_path_mcp.md). |
 | **`opentl_dev_page_read`** | **`0x80287bdc`** | Same addressing; **`mtd->_read`** @ **`mtd+0x68`**. |
 | **`opentl_erase`** | **`0x80287d40`** | **`mtd_erase`** wrapper. |
 | **`opentl_dev_erase`** | **`0x80287dac`** | Logical block → chip coords (same shift split as spare); **`opentl_erase`**. |
@@ -138,11 +138,11 @@ Decompilation targets **`att-5268-11.5.1.532678_prod_lightspeed-install_uimage_0
 | **`opentl_write_oob`** | **`0x80288014`** | **`mtd->_write_oob`** @ **`+0x6c`**, checks **`MTD_WRITEABLE`**. |
 | **`opentl_dev_spare_read`** | **`0x80287f08`** | **`memset`** buffer length **`param_3[5]`** (spare bytes), **`opentl_read_oob`**. |
 | **`opentl_dev_spare_write`** | **`0x802880d4`** | **`opentl_write_oob`**. |
-| **`opentl_dev_setup`** | **`0x802881c0`** | Installs **`mtd_priv`** hooks: **`+0x50`** page read, **`+0x54`** page write, **`+0x58`** spare read, **`+0x5c`** spare write, **`+0x60`** erase. |
+| **`opentl_dev_setup`** | **`0x802881c0`** | Installs **`mtd_priv`** hooks (**`decompile_function`** stores **`opentl_dev_*`** pointers): **`+0x50`** **`opentl_dev_page_read`**, **`+0x54`** **`opentl_dev_page_write`**, **`+0x58`** spare read, **`+0x5c`** spare write, **`+0x60`** **`opentl_dev_erase`**. |
 
 **Simulation / extract implications:**
 
-1. **512-byte sectors × 4 per 2048-byte NAND page** (`mtd->writesize`, **not** the **`0x200`** literal used inside **`opentl_accesssectors`** for **sector-sized** memcpys) — **`tl-extract`** byte iteration is equivalent to sector iteration; **`KERNEL_*`** constants in **`opentl/tl_extract.py`** lock this to the kernel (**`KERNEL_NAND_PAGE_BYTES = 2048`**).  
+1. **512-byte sectors × 4 per 2048-byte NAND page** (`mtd->writesize`, **not** the **`0x200`** literal used inside **`opentl_accesssectors`** for **sector-sized** memcpys) — **`tl-extract`** byte iteration is equivalent to sector iteration; **`KERNEL_*`** constants in **`opentl/open_tl.py`** lock this to the kernel (**`KERNEL_NAND_PAGE_BYTES = 2048`**).  
 2. **`opentl_getgeo` CHS** — reporting only; **do not** derive BBM from geometry fields.  
 3. **ECC** — relevant when emulating **bit errors** or validating captured OOB; **not** required for a **clean** TSOP dump linearized by **virt→phys**.  
 4. **`opentl_ioctl` / `process_map`** — why **partition-relative** sector bases differ from **whole-TL** BBM when correlating **`opentla4`** slices.  
@@ -163,8 +163,8 @@ Decompilation targets **`att-5268-11.5.1.532678_prod_lightspeed-install_uimage_0
 | **`param_3[0x13]`** | Pointer to **sub-structure** used by **`ntl_read_page`** (remap object; see §5). |
 
 **Reads:** **`ntl_read_page`**  
-**Writes:** **`ntl_write_page`**  
-**Delete:** **`ntl_delete_page`**
+**Writes:** **`ntl_write_page`** @ **`0x8028df78`** (**`decompile_function`**: **`param_6 == 1`** → **`ntl_write_page`**, with **`last_byte`** **`1`** iff **`param_5 < 9`**)  
+**Delete:** **`ntl_delete_page`** (**`param_6 == 2`**)
 
 Printks (**`ntl_read_page: virtual_block=%d`**, **`ntl_acc_page`**, etc.) anchor this function in **`flash strings.txt`**.
 
@@ -191,15 +191,17 @@ Printks (**`ntl_read_page: virtual_block=%d`**, **`ntl_acc_page`**, etc.) anchor
 
 **Bounds:** Compare **`phys_unit`** against **`(ctx[1] - ctx[0])`** from **`param_3`** — treat **`ctx[0]`/`ctx[1]`** as allowed **physical unit range** for this MTD slice.
 
-**After mapping:** **`ntl_put_chain_in_array`** fills the **chain array**. A loop calls **`ntl_find_phy`** to select the **next physical unit** / spare metadata for this **virtual block + logical page**, then **`ntl_verify_read_phy_page`** performs the **data** read and verify. Details: **§7.3**.
+**After mapping:** **`ntl_put_chain_in_array`** fills the **chain array**. A loop calls **`ntl_find_phy`** to select the **next physical unit** / spare metadata for this **virtual block + logical page**, then **`ntl_verify_read_phy_page`** performs the **data** read and verify. On verify failure, **`ntl_find_phy`** advances to the **next chain candidate** for the **same** virt page; when candidates are exhausted without success, the kernel **zero-fills** the page buffer (same observable outcome as a hole for data bytes). Pseudocode and contrast with offline **`extract_virtual_disk_bytes`**: [ghidra_boardfs_bbm_readpath.md](ghidra_boardfs_bbm_readpath.md) (`ntl_read_page`: verify loop and chain exhaustion). Details: **§7.3**.
 
-**Offline implication:** **`tl-bbm`** needs more than **`linear_v1`** identity: at minimum a **`uint32 phys`** per virt block; ideally **chain length** + **follow-up phys IDs** (§6).
+**Offline implication:** **`binwalker tl-bbm`** / **`tl-mount`** target **`ntl_mount`** / **`*(remap+8)`** replay only: at minimum a **`uint32 phys`** per virt block; ideally **chain length** + **follow-up phys IDs** (§6). A phased design for **`ntl_find_phy` + verify** offline lives in [ghidra_boardfs_bbm_readpath.md](ghidra_boardfs_bbm_readpath.md) (**Offline parity roadmap**).
+
+**Ghidra MCP (May 2026, program `att-5268-…-kernel.elf`):** **`ntl_lookup_page_map`** @ **`0x80285248`** assigns **`*out = 0xffffffff`** (**`out[1] = 0xffff`**) when the per-page bitmap shows the slot unpopulated — i.e. the same **hole** sentinel as the **8-byte virt table** before any NAND data read, matching the offline zero-fill rule in **`opentl.open_tl`**.
 
 ---
 
 ## 6. `ntl_put_chain_in_array` (`0x802888f8`) — build physical-unit chain
 
-**Ghidra MCP (live decompile, current program `att-5268-…ghidra_m00_kernel.elf`):** Confirms **`ntl_read_verify_phy_spare(..., phys, 0, spare_buf)`** — spare walk uses **page argument `0`** inside each erase block; **`spare[8]&4`** → **`ushort`** chain flags; small-page branch maps **`next==0xffff`** → **`0xffffffff`**; large-page branch ORs **`spare[16]<<16 | spare[17]<<24`** onto LE16 **`spare[9..10]`**. **`ntl_verify_chain_seqnum`** compares **`*(byte *)(row + 0xc)`** to the head row’s seq on each hop (**`piVar2[3]`** in uint indexing = offset **12**), ORs **`row[0xd] |= 0x10`**, max hops checked **`> 0x45`**.
+**Ghidra MCP (`user-ghidra`, `decompile_function` @ `0x802888f8`):** See fresh hop-loop detail in [ghidra_boardfs_bbm_readpath.md](ghidra_boardfs_bbm_readpath.md) (**Ghidra MCP — `ntl_put_chain_in_array`**). Confirms **`ntl_read_verify_phy_spare(..., phys, 0, spare_buf)`** — spare walk uses **page argument `0`** inside each erase block; **`spare[8]&4`** → **`ushort`** chain flags; small-page branch maps **`next==0xffff`** → **`0xffffffff`**; large-page branch ORs **`spare[16]<<16 | spare[17]<<24`** onto LE16 **`spare[9..10]`**. **`ntl_verify_chain_seqnum`** compares **`*(byte *)(row + 0xc)`** to the head row’s seq on each hop (**`piVar2[3]`** in uint indexing = offset **12**), ORs **`row[0xd] |= 0x10`**, max hops checked **`> 0x45`**.
 
 **Purpose:** For **virtual block** `param_4`, fill caller array **`param_5`** with **`(phys_unit, flags)`** pairs until terminator **`0xffffffff`**.
 
@@ -310,7 +312,7 @@ This aligns with **`opentl_correct_data`** strings — **software ECC path**, se
 
 ### 7.3 `ntl_find_phy` — find physical candidate
 
-**Offline field table (spare vs RAM chain audit):** see **`output/opentl_mount/spare_chain_fields.md`**.
+**Offline field table (spare vs RAM chain audit):** see **`reference/spare64_bbm_field_map.md`** (64-byte layout, chain vs `SpareRecord` parity, Ghidra MCP steps).
 
 **Role:** Given **`param_4`** = **virtual block**, **`param_5`** = **logical page-in-block**, and the **chain array** from **`ntl_put_chain_in_array`** (**`param_8`**, length **`param_9`**), walk **candidate physical units** until spare proves this page belongs to **`param_4`** or exhaust the chain.
 
@@ -415,7 +417,9 @@ So §7.5’s “parity over **`get_word`**” is **word-wise XOR / nibble parity
 - For **`0xc`**, runs **single-error locating** (parity of halves), then **corrects one byte** at **`param_3 + uVar5`** using a **small decode table** and **`bVar2`** bit position — success returns **`1`** (**correctible**).
 - Printks tie directly to **`opentl_correct_data: ECC1 …`**, **`correctible_error, changing byte`**, **`bad_byte_loc`**, **`unrecoverable_ECC_error`** in **`flash strings.txt`**.
 
-### 7.6 `ntl_write_page` — write logical page
+### 7.6 `ntl_write_page` (`0x8028df78`) — write logical page
+
+**MCP transcript:** [`ghidra_nand_layout_write_path_mcp.md`](ghidra_nand_layout_write_path_mcp.md) (callees, **`get_xrefs_to`**, **`opentl_dev_setup` / `opentl_dev_page_write`** closure vs **`mtd->_write`**).
 
 **Outline (high complexity):**
 
@@ -495,6 +499,52 @@ So §7.5’s “parity over **`get_word`**” is **word-wise XOR / nibble parity
 
 **Remap footprint:** Fields near **`0x14f38`–`0x14f50`** are **volatile cache** — **not** on-flash BBM; still explains **which spare bytes** (**`0xb`**, **`0xd`**, flags) feed **map entries**.
 
+### 7.13 Offline port status — `opentla4` NTL-rw (May 2026)
+
+**Narrative + MCP tables:** [ghidra_ntl_rw_opentla4_mcp.md](ghidra_ntl_rw_opentla4_mcp.md).
+
+| Kernel routine | EA | Python status |
+|----------------|-----|---------------|
+| `ntl_put_chain_in_array` (mode 2) | `0x802888f8` | **Shipped** — `opentl/spare_chain_replay.py` |
+| `ntl_find_phy` (chain index walk) | `0x80288bd4` | **Shipped** — `opentl/ntl_rw.py` (page-map + tail-first chain) |
+| `ntl_lookup_page_map` / `ntl_build_page_map` | `0x80285248` / `0x80284a20` | **Shipped** — `opentl/ntl_page_map.py` |
+| `ntl_map_page_state` | `0x802882a4` | **Shipped** — `opentl/spare_layout.py` |
+| `ntl_compute_spare_xsum` / `ntl_xsum_read` | `0x80288560` / `0x802885d0` | **Shipped** — `opentl/spare_layout.py` |
+| `ntl_verify_read_phy_page` | `0x80288600` | **Shipped** — `opentl/ntl_ecc.verify_read_phy_page_bounce` |
+| `ntl_ecc_read` / `opentl_correct_data` / `opentl_calculate_ecc` | `0x80288388` / `0x80284740` / `0x80284358` | **Shipped** — `opentl/ntl_ecc.py` |
+
+**Capture:** `PACE 5268AC S34ML01G1@TSOP48.BIN` — re-validate after phase 2 (`opentl/ntl_rw.py`). Full `build_inventory` is slow (minutes); use `PACE_FLASH_INTEGRATION=1` and `pytest --timeout=300`.
+
+### 7.14 `ntl_verify_read_phy_page` — bounce layout for ECC
+
+**`ntl_verify_read_phy_page`** treats **`param_6`** as a **single buffer**: **page data** at offset **0**, **64-byte spare** at **`param_6 + page_size`** (see decompiler **`meta = param_6 + *(ushort*)(ctx+10)`**).
+
+**`ntl_ecc_read`** then calls **`opentl_calculate_ecc`** on **512-byte slices** of the page half and compares against ECC bytes stored in the **OOB tail** of that same bounce (not a separate flat spare file offset).
+
+**Offline rule:** When implementing verify, concatenate **logical main page** + **flat spare row** into one **`bytearray(page_size + oob_size)`** before spare xsum / ECC — do not run ECC on main bytes alone with spare only in a sidecar index.
+
+### 7.15 Mode-2 chain array layout (`ntl_put_chain_in_array` → `ntl_find_phy`)
+
+**Ghidra MCP (May 2026):** `ntl_put_chain_in_array` @ `0x802888f8` fills **`param_5`** (e.g. `auStack_22c` in `ntl_read_page`) with **`chain_length`** hops. Each hop is **8 bytes**:
+
+| Offset | Size | Content |
+|--------|------|---------|
+| `+0` | u32 | Physical erase block index |
+| `+4` | u16 | **`spare[8] & 4`** mirror / chain flag (often **`4`**) |
+| `+6` | u16 | Padding / unused in mode-2 fill |
+
+**Separate from the 8-byte virt table entry** at **`*(remap+8) + virt×8`**:
+
+| Virt entry offset | Meaning |
+|-------------------|---------|
+| `+0` | Head phys u32 (`0xffffffff` = hole) |
+| `+5` | **Chain length** (byte) — printk in `ntl_find_phy` uses this |
+| `+6` | Generation / fold counter (byte) |
+
+**`ntl_find_phy` page-map gate** (`0x80288bd4`, fresh search `param_7==0`): decompiler shows **`*(char *)(param_8 + 5) == 4`** with **`param_8`** = chain array base. On a little-endian slot with **`flags == 4`**, byte **`+4`** is **`0x04`** and byte **`+5`** is **`0x00`** — so the **literal `+5 == 4` test does not match mirror-flag encoding**. Treat the intent as: enable **`ntl_lookup_page_map` / `ntl_build_page_map`** when the rw chain has **mirror-tagged hops** (`ushort @+4 == 4`) and/or **`chain_length >= 2`**. Python: `opentl.spare_chain_replay.chain_page_map_fast_path`.
+
+**`ntl_find_phy` inner loop** uses **`*(short *)(param_8 + local_40 * 2 + 1) != 4`** — Ghidra **`uint *` math** → byte offset **`local_40×8 + 4`**, i.e. the same **flags ushort** per slot.
+
 ---
 
 ## 8. `ntl_schedule_folds` — pre-write cache bit clearing
@@ -511,6 +561,7 @@ Walks a small list, clears bit **`0x4`** on entries, may call **`ntl_fold_block`
 4. **`ntl_prev_phy_location`** — **§7.1a**; **`ntl_prepare_wspare`** — **§7.4b**; **`ntl_compute_spare_xsum`** — **§7.4a**.
 5. ~~**`get_word`**~~ — resolved **§7.5a** ( **`memcpy` + return first word** ); **`opentl_calculate_ecc`** outer structure (**8×8 `uint` lanes × 8 steps**) confirmed from the same **`.bin.c`** export.
 6. **Done in-doc:** **`ntl_allocate_unit`** (**§7.10**), **`ntl_write_verify_phy_page`** (**§7.9**), **`tl_fold_chain`** (**§7.11**), **`ntl_lookup_page_map`/`ntl_build_page_map`** (**§7.12**).
+6b. **Offline port:** **`ntl_page_map` + `ntl_ecc`** for **`opentla4`** — see **§7.13–§7.14** and [ghidra_ntl_rw_opentla4_mcp.md](ghidra_ntl_rw_opentla4_mcp.md).
 7. **Label remap RAM:** **`sub+0x15010`** free pool, **`sub+0x15080`** wear victim scratch, **`0x14f38`/`0x14f44`** LRU nodes, **`0x14f50+(virt&0xf)*0xc`** bucket heads — tie to **`tl_chain_size`**, **`tl_follow_chain`**, **`ntl_update_stat`**, **`tl_erase_chain`** (see **§11.2** for **`ntl_initialize_memory`**/**`tl_init_chain`** anchor offsets into **`remap`**).
 8. **Label `piVar10` fields:** **`[0]`** mode, **`[1]`** 16-byte phys table, **`[2]`** virt 8-byte table, **`[4]`** virt count, **`[5]`** max phys, **`[0xc]`** spare scratch, **`+0x28`** (**`ntl_write_verify_phy_page`** bounce), **`+0x30`** spare verify buffer base.
 9. ~~**Confirm `ctx[0x13]` vs `*(ctx+0x4c)`**~~ — resolved for **`inner`**: same slot (**§11**); **`root+0x4c`** is a different **phase flag**.
@@ -521,9 +572,9 @@ Walks a small list, clears bit **`0x4`** on entries, may call **`ntl_fold_block`
 
 | Component | Fit |
 |-----------|-----|
-| **`tl-bbm --mode linear_v1`** | Assumes **`virt_i → phys_i`**; firmware uses **`table[virt].phys`** — **wrong** when remap is non-identity or sparse. |
-| **`tl-extract`** | Needs JSON **`virt_to_phys_block`** consistent with **8-byte table + optional chain** for bad blocks. **`KERNEL_LOGICAL_SECTOR_BYTES` / `KERNEL_NAND_PAGE_BYTES`** in **`tl_extract.py`** match **`opentl_accesssectors`** / **`opentl_add_mtd`** (§3.1). Helper **`layout_within_tl_erase_unit`** documents **512-in-2048** placement inside a **128 KiB** TL unit. |
-| **`tl-bbm-score`** | Can still rank hypotheses using **ext2 / uImage** until BBM bytes are parsed from **`ntl_put_chain_in_array`** / loader init. |
+| **`tl-bbm`** | Invokes **`opentl.bbm_kernel_replay`** / heuristics: firmware uses **`table[virt].phys`** at **`*(remap+8)+virt×8`** — no identity shortcut in-tree. |
+| **`tl-extract`** | Needs JSON **`virt_to_phys_block`** consistent with **8-byte table + optional chain** for bad blocks. **`KERNEL_LOGICAL_SECTOR_BYTES` / `KERNEL_NAND_PAGE_BYTES`** in **`open_tl.py`** match **`opentl_accesssectors`** / **`opentl_add_mtd`** (§3.1). Helper **`layout_within_tl_erase_unit`** documents **512-in-2048** placement inside a **128 KiB** TL unit. |
+| **`tl-bbm-score`** | *Not shipped in this repository* — design-only; use external ranking if needed until BBM bytes are parsed from **`ntl_put_chain_in_array`** / loader init. |
 
 ---
 
@@ -551,11 +602,11 @@ So: **`*(param_3+0x4c)`** in NAND helpers is **`inner + 0x4c`**, i.e. **`inner[0
 2. **`add_mtd_blktrans_dev(root, …)`** (from attach after cap math): **`root[0x13]=1`**, allocate **`root[0x14]`**, worker **`mtd_blktrans_request`** / **`__raw_spin_lock_init`**, links **`add_disk`**, **`sysfs_create_group`** — builds block layer; **does not** replace **`inner[0x13]`** itself.
 3. **`ntl_mount(inner, …)`**: if **`inner[0x13]`** null, **`ntl_allocate_memory`** **`kmalloc`s** the **remap** blob (size **`((phys_range+1)×0x18 + 0x150dc + …)`**), **`memset`**, sets **`inner[0x13]`**, allocates **`remap[8]`…`[11]`** (+ **`[12]`/`[13]`** pools) via **`tl_malloc`** (**`tl_malloc`**); then **`ntl_initialize_memory`** lays out freelists / buckets / LRU (**§11.2**) and fills the **8-byte virt table** with **`0xffffffff`**. Else branch **`ntl_initialize_memory`** only. Then **`piVar31 = inner[0x13]`**, **`tl_add_chain`** (and related loaders) populate from NAND; **`ntl_put_chain_in_array`** is the **chain-array** builder used from read/write/delete paths (**§6**), not to be confused with the thin **`ntl_read_phy_spare`** spare gate (**§11.2**).
 
-**Offline implication:** the **virt→phys table** is **heap-backed** and **filled from spare/OOB walks** — not a dense array at a fixed offset inside a flat **`tlpart.bin`** carve. **`tl-bbm`** identity / **`brute_reserved`** maps remain **hypothesis generators** until stats-block layout or full chain replay exists (**[issue.md](issue.md)**).
+**Offline implication:** the **virt→phys table** is **heap-backed** and **filled from spare/OOB walks** — not a dense array at a fixed offset inside a flat **`tlpart.bin`** carve. **`tl-bbm`** identity / **`brute_reserved`** maps remain **hypothesis generators** for scoring only; **`tl-mount`** **`kernel_replay_v1`** builds a table from a **paired flat spare** scan (**[issue.md](issue.md)**).
 
 **Xref target for virt table:** writes through **`*(remap+8)`** after **`ntl_allocate_memory`** — **`remap = *(inner+0x4c)`**; label **`inner`** as **`mtd_priv + 0xa0`** in Ghidra.
 
-**Stats block NAND persistence:** **`ntl_update_stat`** only bumps **RAM** counters in **`remap+0x150cc`**; **`ntl_flush_table`** writes that buffer through **`ntl_access_pages(..., op=WRITE)`** with the **same virtual page window** as **`ntl_load_stat_table`** (**`ntl_stat_flush_if_needed`** rate-limits flush). See **`output/opentl_mount/stats_persist_ghidra.md`**.
+**Stats block NAND persistence:** **`ntl_update_stat`** bumps **RAM** counters in the stats arena; **`ntl_flush_table`** (`0x8028ea6c`) writes that buffer through **`ntl_access_pages(..., op=WRITE)`** with the **same virtual page window** as **`ntl_load_stat_table`** (`0x8028aab0`). **`ntl_stat_flush_if_needed`** (`0x8028eb08`) rate-limits flush (jiffies delta **`> 0x15180`** or dirty counter **`> 200`**). **`ntl_reset_stat_table`** (`0x8028a938`) stamps **`0x10000`**, **`0xDEAD1001`**, and copies **`remap[5]`** into the first **12** bytes. **`ntl_initialize_memory`** (`0x80289610`) sets **`remap[0x5432]`** = **`align_up((phys_span+0xc)×4, inner[4])`**. Full field math and mount ordering: **[`opentl_stats_block_layout.md`](opentl_stats_block_layout.md)** + **[`opentl/stats_block.py`](../opentl/stats_block.py)** (May 2026 Ghidra MCP on `att-5268-…-kernel.elf`).
 
 ### 11.1 Ghidra session confirmation (REST `127.0.0.1:8089`, kernel image loaded)
 
@@ -686,7 +737,7 @@ With **`remap_ptr`** typed **`int *`** **`piVar2`**, **`piVar2 + 0x5404`** and *
 - Walks **`next = *(uint *)row`** until **`0xffffffff`**, sets **`*(byte *)(row + 0xd) |= 0x10`**, checks **`*(byte *)(row + 0xc)`** (**chain sequence id**) matches **`uVar6`** on every hop — printk **`mismatch_seq_in_chain`** / **`Hard_hart`** on mismatch.
 - **Max chain length `0x45`** (**69**) — **`chain_length_over_max`**.
 
-**Offline spare inference:** **`infer_virt_map_from_all_page_spares`** ( **`tl-mount-sim`** ) resolves duplicate spare decodes with **lexicographic `(page_index, phys_block)`**, not **`ntl_verify_chain_seqnum`** chain order. Wrong winners produce bad **`virt→phys`** even when **`extract_virtual_disk_bytes`** is correct—rank **`brute_reserved_v1`** slides with **`tl-bbm-score`** / **`tl-extract`** **`ext2_magic_ok`** after tightening spare decode or threading **`--nand-logical-offset`** on full-chip inputs.
+**Offline `tl-mount`:** :func:`opentl.tl_mount.mount_flash_image` reads the logical prefix and, with a **paired full flat spare** (``--spare``, length ``raw_blocks×64×64`` B), delegates to :func:`opentl.bbm_kernel_replay.build_block_map_from_kernel_mount_replay` (**``kernel_replay_v1``**): OpenTL-tagged spare rows with valid xsums populate **uint32** phys indices in ``virt_to_phys_block``; unmapped virt slots remain holes (**``0xffffffff``**). Write semantics and address notes: **`reference/ntl_mount_virt_table_fill.md`**. For **per-hop** spare chain replay on a known start phys, use **`replay_put_chain_mode2_from_oob`** (e.g. ``nand-oob-inspect --spare-chain-replay``). Wrong **`virt→phys`** still breaks **`extract_virtual_disk_bytes`** — validate with **`tl-extract`** / **`ext2_magic_ok`** and **`--nand-logical-offset`** on full-chip inputs.
 
 **`ntl_verify_phy_erase`** — **`if ((*(code **)(ctx + 0x60))() != 0)`** → printk erase failure (**EB** erase); success returns **0**. **NAND erase** callback slot (**contrast §7.1 `+0x58` spare read, §7.9 `+0x50`/`+0x54` program/read-verify**). **Callers:** **`ntl_mount`**, **`ntl_free_block_if_notbad`**.
 
@@ -747,16 +798,48 @@ User / sysfs / ioctl
 
 **`ntl_read_verify_phy_spare`** @ **`0x80288750`**: **`param_6`** = spare buffer (**panic** if **`NULL`**). Calls **`mtd->_spare_read`** hook (**`param_3 + 0x58`** — **`opentl_dev_spare_read`** class path). On success: **`ntl_map_page_state`** on **`param_6[4]`**, conditional **`ntl_xsum_read`** vs **`param_3 + 0x24`** (**ushort** index — spare layout offset), printk **`checksum_fail`** branch; writes **`param_6[4]`** mapped page-state byte.
 
-**Offline tooling:** Flat **`1012 × 64 × 64`** **OOB tail** is consistent with **full spare reads** per **page** at the BCM controller — **`tl-mount-sim`** **`oob_page_spare`** assumes **64 B** contiguous spare per **(phys_block, page)** with **no** interleaved partial copies inside **`nandchip_read_onespare`** beyond **16 B** FIFO bursts into a **64 B** buffer.
+**Offline tooling:** Flat **`1012 × 64 × 64`** **OOB tail** is consistent with **full spare reads** per **page** at the BCM controller — :func:`opentl.spare_chain_replay.oob_page_spare` (used by **`replay_put_chain_mode2_from_oob`**) assumes **64 B** contiguous spare per **(phys_block, page)** with **no** interleaved partial copies inside **`nandchip_read_onespare`** beyond **16 B** FIFO bursts into a **64 B** buffer.
+
+### 12.4 Install-time writes — `.pkgstream` / UBIFS → **`opentl_dev_page_write`** → **`ntl_write_page`**
+
+This subsection bridges **userspace upgrade** ([`firmware_upgrade_process.md`](firmware_upgrade_process.md), [`ghidra_upgrade_write_path_532678.md`](ghidra_upgrade_write_path_532678.md)) to the **same OpenTL block layer** already documented for reads (**§3**, **`opentl_writesectors`**, **`opentl_dev_page_read`**).
+
+**Call narrative (write half):**
+
+```text
+Userspace write (e.g. UBIFS / ext4 on OpenTL child, or loop-mounted squash file)
+  → block_device / fs layer
+  → opentl_writesectors @ 0x80286bf0 → opentl_accesssectors @ 0x80286884 (sector op 2)
+  → ntl_schedule_folds @ 0x8028def0 (pre-IO fold prep)
+  → ntl_access_pages @ 0x8028a574 (ntl op: param_6 == 1 → write)
+  → ntl_write_page @ 0x8028df78 → … → ntl_write_verify_phy_page @ 0x8028c804 (§7.9)
+  → (*(ctx+0x54)) == opentl_dev_page_write @ 0x80287a60 (installed opentl_dev_setup @ 0x802881c0)
+  → mtd->_write @ mtd+0x6c → Broadcom NAND driver / chip program
+```
+(Evidence tables: [`ghidra_nand_layout_write_path_mcp.md`](ghidra_nand_layout_write_path_mcp.md).)
+
+**Structure expectations for TSOP / `paceflash`:**
+
+| Expectation | Rationale |
+|-------------|-----------|
+| **`lib2sp`** streams **`rootimage.img`** / **`ui.img`** to **`/rwdata/tmp/sys2/`** as **ordinary files** — contiguous SquashFS **inside** those files matches **FILE TLV payload** bounds (see **`firmware_upgrade_process.md`** §6a). | Carrier FILE digest is over **full TLV payload length**, which may **exceed** strict **`hsqs` + bytes_used** carve length by a **trailer** (verified on 532678 **`rootimage.img`** — **~4002 B** delta vs native squash carve). |
+| NAND bytes under **`opentla4`** are **not** guaranteed to be “one SquashFS starting at TL offset 0”. **`fwupgrade.txt`** shows **`e2fsck`** on **`/dev/opentla4`** — treat child slice as **filesystem container** or similar; **`hsqs`** hits inside **`paceflash`** may be **embedded blobs**, slack, or **false positives**. | Offline dissect must anchor on **FILE-derived SHA** / corpus grep, not whole-partition carve alone. |
+| **`ntl_write_page`** + allocator imply **logical TL addresses** do not map to **contiguous physical** regions identical to carrier byte order. | Same BBM / spare story as **read** path (**§6–§7**). |
+
+**Ghidra string anchors (532678 kernel ELF):** **`opentl_dev_page_write`** @ **`0x804f75fc`** rodata format string; SquashFS printk family @ **`0x804e91a8`** … (**`Filesystem uses "%s" compression. This is not supported`** etc.). **`search_strings`** on **`ubifs`** returned **no** hits in this stripped ELF — UBIFS may be built without verbose printk substrings or uses different spelling; do **not** treat absence as “no UBIFS”.
 
 ---
 
 ## 13. References in-tree
 
+- **[ghidra_nand_layout_write_path_mcp.md](ghidra_nand_layout_write_path_mcp.md)** — Ghidra MCP callee/xref snapshot for **`ntl_write_page`** → **`ntl_write_verify_phy_page`** → **`opentl_dev_page_write`** → **`mtd->_write`**, plus page-map cache xrefs (**2026-05-15**).
+- **[ghidra_opentla4_disk_layout_mcp.md](ghidra_opentla4_disk_layout_mcp.md)** — **`opentla4`** vs **`opentla0`**: three coordinate spaces, **`ctx+0xec/+0x1c`** page base, **`CBLKMAP`** / **`process_map`**, **`ctx+0x88`** divisor (**open items** for exact structs).
 - **[printk_anchor_fwupgrade_ghidra.md](printk_anchor_fwupgrade_ghidra.md)** — **`fwupgrade.txt`** §196–367 printk anchors vs **BCMNAND / OpenTL** Ghidra rodata xrefs.
+- **[ghidra_upgrade_write_path_532678.md](ghidra_upgrade_write_path_532678.md)** — **`libpkg_client`/`lib2sp`** Ghidra checklist + **`532678`** kernel string anchors (**squashfs**, **`OPENTL`** write printk).
 - **[fwupgrade.txt](fwupgrade.txt)** — **`tlpart`**, **`cap=0x0003D4FC`**, BBM/stats printks.
 - **[flash strings.txt](flash%20strings.txt)** — `OPENTL:`, `ntl_`, `opentl_dev_`, `opentl_map.c`.
 - **`opentl/tl_bbm.py`** — current map schemas (**`binwalker_tl_bbm_v1`**).
+- **[`opentl_stats_block_layout.md`](opentl_stats_block_layout.md)** — stats persist / virtual tail (**`ntl_load_stat_table`**, **`ntl_flush_table`**); Python **`opentl/stats_block.py`**.
 - **Reconstructed kernel ELF (`vmlinux-to-elf`)** — **§0**:
   - **[`…_ghidra_m00_kernel.elf`](firmware_11.5.1.532678/11.5.1.532678/install_package/pkgstream_carves/att-5268-11.5.1.532678_prod_lightspeed-install_uimage_0x01ae4b7e_36645b10_ghidra_m00_kernel.elf)** — preferred Ghidra/IDA input.
   - **[`…_ghidra_m00_kernel.kallsyms.txt`](firmware_11.5.1.532678/11.5.1.532678/install_package/pkgstream_carves/att-5268-11.5.1.532678_prod_lightspeed-install_uimage_0x01ae4b7e_36645b10_ghidra_m00_kernel.kallsyms.txt)** — 17,277-entry `nm`-style listing (grep this when you don't want to round-trip Ghidra).

@@ -4,6 +4,8 @@ This document consolidates **what is established** about Broadcom/Pace **OpenTL*
 
 Long-form strategy, NAND math, and tooling notes live in **[issue.md](issue.md)**; carrier bundles and kernel context in **[firmware.md](firmware.md)**; command-line tools in **[tools.md](tools.md)**.
 
+**Python layout:** ``import opentl`` loads only :mod:`opentl.driver` (BBM, :class:`~opentl.open_tl.OpenTL`, virt read helpers) — not :mod:`opentl.nand_pipeline` or :mod:`opentl.tl_mount`. For translate + BBM + extract orchestration use ``from opentl.nand_pipeline import NandPipeline, nand``; for tl-mount inference ``from opentl.tl_mount import …``.
+
 ---
 
 ## 1. What OpenTL is (in this firmware)
@@ -19,9 +21,11 @@ Long-form strategy, NAND math, and tooling notes live in **[issue.md](issue.md)*
 - **TL sector/block translation** (512-byte sectors, CHS-style geometry, remap).
 - **Normal filesystems on top** — in particular **ext2/3/4** on **`/dev/opentla4`**, and (in **U-Boot only**) an alternate path using **UFS** load commands when **`tl checkfstype`** reports the matching type.
 
-Offline dumps of raw **`tlpart.bin`** remain hard because **logical filesystem blocks** may not be one contiguous range in the file without recovering the **virtual→physical** erase-block map.
+Offline dumps of raw **`tlpart.bin`** remain hard because **logical filesystem blocks** may not be one contiguous range in the file without recovering the **virtual→physical** erase-block map. In the Linux driver, an unmapped virt slot uses **`phys_unit == 0xffffffff`** with a cleared validity byte — the page buffer is **zero-filled** and **no NAND read** is issued; offline, **`opentl.open_tl.extract_virtual_disk_bytes`** mirrors that (**`opentl/tl_mount`** may emit the same sentinel for spare-inference gaps). For **`opentla4` / ptype 17**, use **`opentl/ntl_rw.py`**: **`ntl_verify_read_phy_page`** logs ECC/xsum failures but still returns bounce data (Ghidra @ `0x80288600`); track **`ecc_failures`** in assembly telemetry — see [ghidra_ntl_rw_opentla4_mcp.md](ghidra_ntl_rw_opentla4_mcp.md). Virt entry chain length: [`opentl/virt_slot.py`](../opentl/virt_slot.py).
 
-**Kernel `drivers/mtd/opentl` (Linux):** How **512-byte sectors** attach to **2048-byte** NAND pages, software ECC, **`tlpart`** attach, and **`mtd_priv`** hooks (**`opentl_dev_page_read`** … **`opentl_dev_setup`**) is summarized in **[opentl_kernel_ghidra.md](opentl_kernel_ghidra.md) §3.1** (symbol table + simulation notes). Constants **`KERNEL_*`** in **`opentl/tl_extract.py`** align that layer with offline tools.
+**Kernel `drivers/mtd/opentl` (Linux):** How **512-byte sectors** attach to **2048-byte** NAND pages, software ECC, **`tlpart`** attach, and **`mtd_priv`** hooks (**`opentl_dev_page_read`** … **`opentl_dev_setup`**) is summarized in **[opentl_kernel_ghidra.md](opentl_kernel_ghidra.md) §3.1** (symbol table + simulation notes). Constants **`KERNEL_*`** in **`opentl/open_tl.py`** align that layer with offline tools.
+
+**`opentla4` (rw / ext2):** Kernel **ptype 17** uses **NTL mode-2** spare-linked chains for reads — documented in **[ghidra_ntl_rw_opentla4_mcp.md](ghidra_ntl_rw_opentla4_mcp.md)** with offline port in **`opentl/ntl_rw.py`**.
 
 ---
 
@@ -35,6 +39,8 @@ BCMNAND → MTD (tlpart) → OpenTL driver → opentla0 (982 virtual blocks, ~25
 **U-Boot** registers the TL device as **`opentl`** and uses **MMC-style** `dev:part` syntax (e.g. **`opentl 0:5`**). That **partition index** is the **whole-disk / container** view used by **`ext2load`** / **`ufsload`**, aligned with the large slice that backs **`/dev/opentla4`** in Linux.
 
 **Linux** uses **`tldisk_partition`**, **`parse_bsd`**, and device names **`opentla0` … `opentla4`** (see dmesg strings in **[flash strings.txt](flash%20strings.txt)**).
+
+**Kernel evidence (virt slice vs NAND):** **[ghidra_opentla4_disk_layout_mcp.md](ghidra_opentla4_disk_layout_mcp.md)** — MCP decompilation of **`opentl_accesssectors`** / **`opentl_ioctl` (`CBLKMAP`)** / **`process_map`** shows how **`opentla4`** sector **`0`** maps through **`ctx+0xec`** **page base** into the **same** OpenTL BBM as **`opentla0`**, not a separate MTD child.
 
 ### 2.1 Diagrams — NAND → OpenTL → **`opentla*`**
 
@@ -93,7 +99,7 @@ Early **kernel PROM** path (**`prom_init`**) that seeds **default `mtdparts=` / 
 | **Capacity line** | Strong | **`cap=0x0003D4FC` (251132)** sectors and **`nand_geom: cap=… cyl=… nhead=… nsectors=…`** in U-Boot; kernel prints **`tldisk_partition: cap: 0x0003D4FC (251132)`**. |
 | **BSD disklabel on `opentla0`** | Strong | Kernel **`parse_bsd`** lines list four partitions; types **`0x1d`** (env), **`0x1c`**, **`0x11`** (BSD **FS_EX2FS** = ext family). |
 | **`opentla4` = ext2** | Strong | **`e2fsck /dev/opentla4`** in captured logs; directory listings include **`sys1`**, **`pkg`**, **`config`**, etc. |
-| **Virt→phys remap table** | Open | **`tl-bbm`** in-repo tooling uses a **null hypothesis** (**`linear_v1`**) until the **stats / BBM on-disk layout** is decoded from firmware. |
+| **Virt→phys remap table** | Partial | Kernel **tail stats** window + magic triple documented (**[`opentl_stats_block_layout.md`](opentl_stats_block_layout.md)**); full per-virt map needs **`ntl_mount`** / **`*(remap+8)`** replay (**`opentl.bbm_kernel_replay`**, stub). **`binwalker tl-bbm`** invokes that replay only (no legacy identity CLI). |
 
 ---
 
@@ -126,6 +132,8 @@ Observed / inferred directories and roles:
 
 - **`/sys1`**, **`/sys2`**, **`/sys3`** — **A/B/C-style boot banks** (kernels + initrds in U-Boot paths below).
 - **`/pkg`**, **`/config`**, **`/cm`**, **`/tmp`**, **`lost+found`**, **`.upgrade`** — operational / upgrade layout (from listings cited in **[issue.md](issue.md)**).
+
+**Offline (May 2026):** Full PACE NAND dump → **`python -m paceflash --flash "…BIN" ls`** / **`shell`** lists the same tree after NTL assembly + Dissect ext2 at **`1024`**. Embedded **`sys1/rootimage.img`** reads as SquashFS; **`sys1/ui.img`** may truncate — **[paceflash.md](paceflash.md)**, **[ghidra_ntl_rw_opentla4_mcp.md](ghidra_ntl_rw_opentla4_mcp.md)**.
 
 ### 5.3 U-Boot **`bootcmd`** filesystem branch
 
@@ -170,7 +178,7 @@ flowchart LR
   BIN -->|"nand-translate\n--mode auto"| PLANE
 ```
 
-- Full dumps are often **`138412032`** bytes (data + OOB envelope **count**); **`mtdparts`** / **`partition-map`** use **logical** offsets into the **128 MiB data** plane **after** stripping inline spare or skipping a flat spare tail. Offline **`tl-mount-sim`** / **`tl-extract`** accept **`--nand-logical-offset 0x180000`** when the **open file** already starts at chip byte **0** but OpenTL’s **`tlpart`** begins after **`524288(loader)+1048576(mtdoops)`** — see **[tools.md](tools.md)** (**`tl-mount-sim`** row).
+- Full dumps are often **`138412032`** bytes (data + OOB envelope **count**); **`mtdparts`** / **`partition-map`** use **logical** offsets into the **128 MiB data** plane **after** stripping inline spare or skipping a flat spare tail. For **`tl-mount`**, omit **`--nand-logical-offset`** to infer the skip from **file size** (**134217728** B nand-translate plane → **0x180000**; **1012×128KiB** tlpart → **0**), or pass an explicit offset when byte **0** of the open file is not what that rule assumes. **`tl-extract`** still takes an explicit offset (default **0**). See **[tools.md](tools.md)** (**`tl-mount`** row).
 - **PACE `…TSOP48.BIN`** in this repo verifies **inline** packing; reference carves live under **`output/carved_flash/carve_deinterleaved/`** on **`flash_logical_deinterleaved.bin`**. Legacy **`PACE … TSOP48_carve/`** offsets assume raw linear layout and can drift — see **[issue.md](issue.md)** (**Legacy vs deinterleaved carves**).
 - Tie-break and weak tests (**ELF**, **`hsqs mod 2112`**) are summarized in **[issue.md](issue.md)** (**Dump layout**); they complement but do not replace **`nand-translate`** for **`138412032` B** class files.
 
@@ -196,12 +204,12 @@ flowchart LR
 
 | Topic | Why it matters |
 |-------|----------------|
-| **Stats block binary layout** | Drives counters / wear / bookkeeping; pairs with **`resetting stats`** and TL_debug paths in U-Boot. |
+| **Stats block binary layout** | **Partially closed (kernel):** magic triple, `remap[0x5432]` byte-length formula, virtual tail placement, flush policy — see **[`opentl_stats_block_layout.md`](opentl_stats_block_layout.md)** + [`opentl/stats_block.py`](../opentl/stats_block.py). **Still open:** full semantic decode of counters inside the arena and U-Boot-only **TL_debug** strings. |
 | **Bad-block map layout (30 “bb” slots)** | Needed for correct **virtual → physical** erase-block translation when extracting **`opentla4`** from **`tlpart.bin`**. |
 | **`tl checkfstype` implementation** | Defines exact meaning of **`7`** vs **`11`** and any other codes; bounds when UFS vs ext2 paths run. |
 | **UFS-on-partition-5 behavior** | If UFS is still used on some builds, **UFS superblock** location and TL mapping for that mode need documentation. |
 | **`opentla3` (type `0x1c`)** | Small partition; purpose unclear from strings alone. |
-| **Env CRC algorithm / field layout** | **`CRC=972f0f3`** is a stable fingerprint per build; **`tl-crc-re`** explores polynomials — confirm against extracted env blobs. |
+| **Env CRC algorithm / field layout** | **`CRC=972f0f3`** is a stable fingerprint per build (see **`fwupgrade.txt`** / serial logs); confirm against bytes at the known env partition offset in the dump rather than blind full-image string scans. **Bounded** parse in [`uboot/env.py`](../uboot/env.py): `parse_uboot_env_v1` (CRC + NUL-split pairs, then `get_mtdparts_token` / `get_mtdparts_token_from_env_blob` from [`uboot/cmdline.py`](../uboot/cmdline.py)) and `read_uboot_env_v1_file` for a fixed file slice. **`binwalker partition-map`** / **`carve`** call [`binwalker/extract/flash_layout.py`](../binwalker/extract/flash_layout.py) **`try_mtdparts_from_uboot_env`** first (logical reads via **`unand.layout.read_logical_plane_interval`**) to recover real **`mtdparts`** before **`mtd-scan`**. |
 | **`opentl_map.c` translation** | Filename appears in U-Boot strings — likely central to **sector → NAND page** mapping. |
 
 ---
@@ -310,6 +318,7 @@ Log snippets in **[flash strings.txt](flash%20strings.txt)** reference **`/rwdat
 
 - **[prom_init_ghidra.md](prom_init_ghidra.md)** — BCM63xx **`prom_init`** (**`0x80565588`**): embedded default **`mtdparts=`**, **`kerSysEarlyFlashInit`**, **`printk`** branches, Ghidra merge notes; call graph vs **`setup_arch`**.
 - **[opentl_kernel_ghidra.md](opentl_kernel_ghidra.md)** — Linux **`drivers/mtd/opentl`** Ghidra notes: **`FUN_80286884`** / **`FUN_8028a574`** / **`FUN_80289170`** / **`FUN_802888f8`** / **`FUN_80288600`**, **8-byte virt→phys table**, spare-chain vs RAM-chain modes, field offsets, **`tl-bbm`** implications.
+- **[opentl_stats_block_layout.md](opentl_stats_block_layout.md)** — stats arena (`remap[0x5432]`), magic triple, virtual tail placement, flush cadence; Python **`opentl/stats_block.py`**.
 - **[issue.md](issue.md)** — MTD vs OpenTL issue statement, BBM/stats arithmetic, disklabel table, strategy, RE breadcrumbs.
 - **`PACE … TSOP48_carve/carve_summary.md`** — carved **`uImage`** / PEM clusters consistent with multiple **`sys*`** banks.
 - **`mtd_parts/tlpart.bin.md`** — binwalk-oriented notes on **`tlpart`** slice.

@@ -2,6 +2,18 @@
 
 This file tracks firmware-relevant exposure and analysis hooks. It is not a formal audit.
 
+## CMDB / flash confidentiality
+
+**Configuration Manager** state under **`/rwdata/cm`** is stored as **plain XML** (often **UTF-16 LE** in extracts). A **NAND/flash dump** or successful **`paceflash cat` / `--cmdb-recover`** recovers **BDC pull credentials**, **`keys`/`root_rsa`**, Wi‑Fi keys, TR-069 parameters, and telemetry HTTP passwords without cryptanalysis.
+
+See **[`cmdb_security.md`](cmdb_security.md)** for threat model, redacted inventory, and Ghidra consumer chains (**`cwmd`**, **`librgw_compat`**, **`rgwdbsetup`**).
+
+## Unix `shadow` on flash (`sysinit/etc`)
+
+On **opentla4** ext2, **`paceflash ls/cat sysinit/etc/`** recovers **`shadow`**, **`passwd`**, and backup **`shadow-`** / **`passwd-`** from a NAND dump. The captured unit had a **`root`** **`$6$`** (SHA-512 crypt) hash; other accounts were locked (**`*`**).
+
+That enables **offline password cracking** in a lab (hashcat mode 1800 / John `sha512crypt`) if the root password is weak. It is a **separate store** from CMDB/web (**`tw_ulib_pwd_*`**). Details: **[`flash_sysinit_credentials.md`](flash_sysinit_credentials.md)**.
+
 ## Web admin / `httpd` attack surface
 
 The **LAN (and often WAN-facing) web UI** is implemented by **`/usr/bin/httpd`**, with configuration and XSLT supplied from a **secondary squashfs** (`conf/*_conf.xml` and related templates). This is a **high-value attack surface**: any bug in request parsing, authentication, XSLT transform, SOAP handling, or URL rewrite logic can affect device integrity and confidentiality.

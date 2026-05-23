@@ -10,6 +10,8 @@ Official updates often ship as **`.pkgstream`** / install packages; this repo ma
 
 The file **[`pkgstreams`](pkgstreams)** is a **plain-text catalog** of paths on AT&T’s historical gateway CDN **`gateway.c01.sbcglobal.net`**: **one logical URL per line**, without an `http://` or `https://` prefix (scripts and **[`binwalker/resolver.py`](binwalker/resolver.py)** prepend **`https://`** when downloading).
 
+**S3 backend:** objects live in bucket **`ecouverseprodeast-firmware`** (account `601471275036`), served via **CloudFront** `d3s4wzxismc942.cloudfront.net`. **`s3:ListBucket` is denied** for anonymous callers and for IAM user **`vcdn`**; **GET of known keys via the gateway hostname still works**. See **[`gateway_s3_bucket.md`](gateway_s3_bucket.md)**.
+
 Canonical **path layout**:
 
 ```text
@@ -27,7 +29,7 @@ https://gateway.c01.sbcglobal.net/firmware/{device_code}/{release_dir}/…/<arti
 
 **Quirk:** a few scraped lines split the URL with a **space** after **`device_code/`** (e.g. `…/00D09E/ 10.5.3…`); remove the space before requesting the object.
 
-**Tooling:** use **`python -m binwalker download <version>`**, **`download-all`**, or **`analyze <flash>`** — **[`BinWalkerAnalyzer`](binwalker/analyzer.py)** loads **`pkgstreams`** via **[`URLResolver`](binwalker/resolver.py)** to tie **dump-derived version strings** to these URLs (root **`firmware_downloader.py`** is a thin backward-compatible shim only). See **[tools.md](tools.md)** for CLI examples.
+**Tooling:** use **`python -m binwalker analyze <flash>`** (or **`scan`** / **`mtd-scan`**) to tie **dump-derived version strings** to **`pkgstreams`** URLs via **[`BinWalkerAnalyzer`](binwalker/analyzer.py)** / **[`URLResolver`](binwalker/resolver.py)**. **`python -m binwalker download`** / **`download-all`** were **removed** from the binwalker CLI — acquire artifacts manually under **`firmware_*`** and verify **`.pkgstream`** with **`python -m lib2spy.pkgstream`**. Root **`firmware_downloader.py`** remains a thin shim over **`binwalker.downloader`** for old scripts only.
 
 ## Downloaded carrier bundle (`firmware_11.5.1.532678/`)
 
@@ -94,6 +96,47 @@ git clone --depth 1 --branch 3.4.11-rt19 \
 ```
 
 Nothing here is a substitute for the vendor’s documentation or support; it reflects **observed strings and binaries** from dumps and public reverse-engineering practice.
+
+## Kernel modules
+
+The **Lightspeed `11.5.1.532678`** install payload (and related carrier streams under the same release) ship a **Broadcom / Pace BSP** on **Linux 3.4.11-rt19** with many **out-of-tree loadable modules** (ELF **`.ko`**). They normally live on the **read-only SquashFS** dissected from **`.pkgstream`** (not as loose files in this repo unless you have extracted trees under **`work_tl_crc/`**).
+
+**Finding paths:** index or grep the dissect corpus with **`tools/squashfs_corpus_grep.py`** and collection **`firmware_11.5.1.532678/11.5.1.532678`** — see **[`tools.md`](../tools.md)** and the **squashfs-corpus-index** skill ([`../.cursor/skills/squashfs-corpus-index/SKILL.md`](../.cursor/skills/squashfs-corpus-index/SKILL.md)). ELF **`.ko`** entries are indexed like **`.so`** binaries (symbols / strings). For **Ghidra**, import the resolved on-disk path via **ghidra-mcp** **`/import_file`** and always pass the firmware-style **`program`** path from **`/list_open_programs`** — see **ghidra-mcp-corpus** ([`../.cursor/skills/ghidra-mcp-corpus/SKILL.md`](../.cursor/skills/ghidra-mcp-corpus/SKILL.md)).
+
+The table below is a **single baseline checklist** of vendor modules that appear in this RE scope (names as in the image; **subsystem labels are descriptive**, not formal ABI guarantees).
+
+| Module | Typical role (high level) |
+|--------|-------------------------|
+| **`adsldd.ko`** | ADSL / DSL datapath (Broadcom); **`adsldd`** appears in kernel printk on this family. |
+| **`bcm_bpm.ko`** | Broadcom buffer / packet manager–class support (BSP naming). |
+| **`bcm_enet.ko`** | Ethernet driver / NAPI path for on-SoC switch / PHY stack. |
+| **`bcm_ingqos.ko`** | Ingress QoS / marking (Broadcom gateway stack). |
+| **`bcm_usb.ko`** | USB host/device glue for BCM USB blocks. |
+| **`bcmarl.ko`** | ARL / L2 address learning or forwarding helper (switch dataplane). |
+| **`bcmfap.ko`** | FAP (flow accelerator processor) offload / co-processor interface. |
+| **`bcmvlan.ko`** | VLAN filtering / tagging in the BCM fastpath. |
+| **`bcmxtmcfg.ko`** | XTM (DSL / ATM / PTM) **configuration** / link-type plumbing. |
+| **`bcmxtmrtdrv.ko`** | XTM **runtime** / fastpath driver (pairs with **`bcmxtmcfg`**). |
+| **`chipinfo.ko`** | SoC / chip ID export to userspace or late **`/proc`** style hooks. |
+| **`conntrack_pace_ror.ko`** | Conntrack integration with **PACE** “RoR” / pacing extensions. |
+| **`dect.ko`** | DECT base / radio stack (cordless). |
+| **`dectshim.ko`** | Shim between DECT core and VoIP / telephony userspace. |
+| **`dpicore.ko`** | Deep packet inspection / inspection engine core (operator class). |
+| **`endpointdd.ko`** | Endpoint / voice-line device driver (BSP). |
+| **`nciTMSkmod.ko`** | TMS / test & measurement kernel hooks (**`nci`** prefix in-tree naming). |
+| **`pace_flowmgr.ko`** | **PACE** flow manager (QoS / session steering). |
+| **`pace_tai.ko`** | **PACE** time / accounting / interval logic (TAI). |
+| **`pacebattery.ko`** | **PACE** battery / UPS / power-fail telemetry (if equipped). |
+| **`pcmshim.ko`** | PCM / voice-sample path shim (telephony). |
+| **`pktflow.ko`** | Fastpath packet flow / offload orchestration (often interacts with **`wl`**, **`bcm_enet`**). |
+| **`pwrmngtd.ko`** | Power management daemon kernel side (suspend / clocks / cpufreq hooks). |
+| **`tdts.ko`** | Vendor kernel helper (BSP abbreviation **`tdts`**; role confirmed via strings / symbols in Ghidra). |
+| **`wfd.ko`** | **Wi‑Fi Direct** ( **`wfd`** ) support alongside fullmac **`wl`**. |
+| **`wl.ko`** | Broadcom **wireless fullmac** driver (primary 802.11 datapath on this class). |
+| **`wlcsm.ko`** | Wireless **CSM** / coexistence / channel survey module. |
+| **`wlemf.ko`** | Wireless **EMF** / regulatory / energy-related extension module. |
+
+**Related in this repo:** kernel load / **`prom_init`** / OpenTL driver notes — **[`prom_init_ghidra.md`](prom_init_ghidra.md)**, **[`opentl_kernel_ghidra.md`](opentl_kernel_ghidra.md)**; modules depend on the **same vmlinux** export for unresolved kernel symbols when analyzed in isolation.
 
 ## Boot / upgrade trace (`fwupgrade.txt`)
 

@@ -3,7 +3,7 @@
 > Operational security assessment of the AT&T-branded 5268AC `pkgstream` install /
 > upgrade format. Pairs the Phase 1 reverse-engineering captured in
 > [`output/trust_chain_re_notes.md`](output/trust_chain_re_notes.md) with
-> reproducible probes in [`opentl/tests/probes/`](opentl/tests/probes/).
+> reproducible pytest probes *(historical: the `opentl/tests/` tree was removed; rebuild under `lib2spy/tests/` or root `tests/` as needed).*
 >
 > Companion docs: [`pkgstream.md`](pkgstream.md) §9 (format / integrity model),
 > [`firmware_upgrade_process.md`](firmware_upgrade_process.md) (end-to-end upgrade flow + diagrams),
@@ -16,8 +16,9 @@
 3. [Gating logic — `trust_engcert` and signer CN pinning](#3-gating-logic--trust_engcert-and-signer-cn-pinning)
 4. [Multi-signer policy: ANY-of-N](#4-multi-signer-policy-any-of-n)
 5. [Concrete weaknesses and reproducible probes](#5-concrete-weaknesses-and-reproducible-probes)
+   - [5.14 Install actions vs integrity and path safety](#514-install-actions-vs-integrity-and-path-safety)
 6. [Mitigation recommendations](#6-mitigation-recommendations)
-7. [Using the offline verifier (`opentl.pkgstream --validate-chain`)](#7-using-the-offline-verifier-opentlpkgstream---validate-chain)
+7. [Using the offline verifier (`lib2spy.pkgstream --validate-chain`)](#7-using-the-offline-verifier-opentlpkgstream---validate-chain)
 8. [Open questions / out-of-scope items](#8-open-questions--out-of-scope-items)
 
 ---
@@ -163,21 +164,20 @@ The carrier passes if `trusted_and_valid_count >= 1`. Final log line:
 The 5268 install carrier ships with **3 signers** (1 engineering, 2
 production); the production signers chain to `2Wire Certification Authority -
 G1`. The engineering signer is silently skipped on a default device (we
-verified this offline via [`opentl.pkgstream --validate-chain`](opentl/pkgstream.py)).
+verified this offline via [`lib2spy.pkgstream --validate-chain`](lib2spy/pkgstream.py)).
 
 ## 5. Concrete weaknesses and reproducible probes
 
-Each weakness below has a corresponding probe under
-[`opentl/tests/probes/`](opentl/tests/probes/) that reproduces the gap. Run
-the full suite:
+Each weakness below **had** a corresponding probe under
+`opentl/tests/probes/` *(removed)* that reproduced the gap. A rebuilt suite would run via:
 
 ```bash
-python -m pytest opentl/tests/probes/ -v
+pytest lib2spy/tests  # TBD: re-home security probes
 ```
 
 ### 5.1 Pre-auth parser DoS surface
 
-**Probe:** [`test_pre_auth_header_parse.py`](opentl/tests/probes/test_pre_auth_header_parse.py)
+**Probe:** **test_pre_auth_header_parse.py** *(historical probe; `opentl/tests/` removed)*
 
 The 24-byte header walk and TLV iteration happen before any signature is
 checked. Our verifier surfaces clean `ValueError`s on malformed input and
@@ -201,7 +201,7 @@ disabled.
 
 ### 5.3 Outer bzip2 decompression bomb
 
-**Probe:** [`test_decompression_bomb.py`](opentl/tests/probes/test_decompression_bomb.py)
+**Probe:** **test_decompression_bomb.py** *(historical probe; `opentl/tests/` removed)*
 
 `try_decompress_bzip2_prefix` calls `bz2.decompress(data)` with **no maximum
 output cap**. The probe builds a sub-50-byte bzip2 file that decompresses to
@@ -213,7 +213,7 @@ behaviour.
 
 ### 5.4 SHA-1 / MD5 messageDigest across the entire corpus
 
-**Probe:** [`test_sha1_messagedigest.py`](opentl/tests/probes/test_sha1_messagedigest.py)
+**Probe:** **test_sha1_messagedigest.py** *(historical probe; `opentl/tests/` removed)*
 
 Every signer in every `.pkgstream` we have on disk uses SHA-1 (with two
 older test certs using MD5+RSA on the carrier-internal cert chain). Both
@@ -230,7 +230,7 @@ the probe forces the documentation here to be updated. Manifest written to
 
 ### 5.5 Trust anchor overwrite via FILE TLV path
 
-**Probe:** [`test_trust_anchor_overwrite.py`](opentl/tests/probes/test_trust_anchor_overwrite.py)
+**Probe:** **test_trust_anchor_overwrite.py** *(historical probe; `opentl/tests/` removed)*
 
 `lib2sp_simple_unpack` accepts FILE TLVs with **arbitrary absolute
 destination paths** (RE notes §5). A signed-but-malicious carrier could
@@ -253,7 +253,7 @@ is not patchable from the offline toolchain — it requires modifying
 
 ### 5.6 Symlink follow during extract
 
-**Probe:** [`test_symlink_during_extract.py`](opentl/tests/probes/test_symlink_during_extract.py)
+**Probe:** **test_symlink_during_extract.py** *(historical probe; `opentl/tests/` removed)*
 
 `lib2sp_simple_unpack` calls `lib2sp_open_file` (which uses `fopen64`/`open64`)
 with **no `O_NOFOLLOW` flag** and no `realpath` validation. A signed-but-
@@ -270,7 +270,7 @@ symlinks; the probe documents the dangerous device-side behaviour.
 
 ### 5.7 Engineering kill switch flip via CMDB
 
-**Probe:** [`test_signer_chain_invariants.py`](opentl/tests/probes/test_signer_chain_invariants.py)
+**Probe:** **test_signer_chain_invariants.py** *(historical probe; `opentl/tests/` removed)*
 
 Demonstrates that toggling `trust_engcert` (modeled by the verifier's
 matching argument) flips an engineering-rooted signer's chain status from
@@ -296,7 +296,7 @@ across both phases. Open-RE item, but the structure of `pkg_extract.c`
 
 ### 5.9 Runtime PKCS#7-verification kill switch (`--noverifycert`)
 
-**Probe:** [`test_pkgd_verify_kill_switch.py`](opentl/tests/probes/test_pkgd_verify_kill_switch.py)
+**Probe:** **test_pkgd_verify_kill_switch.py** *(historical probe; `opentl/tests/` removed)*
 
 This is the highest-impact pre-verify finding. RE'ing
 `pkg_stream_handler @ pkgd:0x00422464` against
@@ -363,7 +363,7 @@ url stream operation`"). RPC: `pkg_update_1` /
 
 ### 5.11 `/tmp/pkgspool` is created world-writable (mode 0666)
 
-**Probe:** [`test_pkgd_verify_kill_switch.py::test_pkgd_spool_path_is_world_writable_mode`](opentl/tests/probes/test_pkgd_verify_kill_switch.py)
+**Probe:** **test_pkgd_verify_kill_switch.py::test_pkgd_spool_path_is_world_writable_mode** *(historical probe; `opentl/tests/` removed)*
 
 `pkg_spool_init @ pkgd:0x0041fd70` creates the staging file with:
 
@@ -390,9 +390,7 @@ because MIPS PIC code makes the constant location version-dependent.
 
 ### 5.12 BZ2 outer decompression runs before verify gating
 
-**Probe:** [`test_pkgd_pre_verify_decompression.py`](opentl/tests/probes/test_pkgd_pre_verify_decompression.py)
-(complements [`test_decompression_bomb.py`](opentl/tests/probes/test_decompression_bomb.py)
-which exercises the offline helper)
+**Probe:** **test_pkgd_pre_verify_decompression.py** *(historical probe; `opentl/tests/` removed)* (complements **test_decompression_bomb.py** *(historical probe; `opentl/tests/` removed)*, which exercises the offline helper)
 
 RE'ing `lib2sp_install_data @ lib2sp.so:0x00020ae0` confirms that the BZ2
 state machine is **upstream of** `lib2sp_install_2sp_data` (which is where
@@ -460,6 +458,36 @@ There is no "are we still in dev mode?" guard around `pkg_verify_cert_1`;
 the bit-flip is unconditional. A defender's only tool today is locking
 down who can talk to the pkgd RPC.
 
+### 5.14 Install actions vs integrity and path safety
+
+The repo labels on-device **install-phase** behaviour with one-word
+**`install_action`** tokens and longer **`install_comment`** strings in
+[`lib2spy/pkgstream_runtime/lib2sp_dispatch.py`](../lib2spy/pkgstream_runtime/lib2sp_dispatch.py)
+(stubs only — no emulation). Semantic overview: [`pkgstream.md`](pkgstream.md) §10 and
+[`opentl/pkgstream_format_lib2sp.md`](../opentl/pkgstream_format_lib2sp.md). This
+subsection maps those tokens onto **integrity ordering** (PKCS#7, per-TLV
+digests, pre-auth work) and **path / symlink abuse** already proved or argued
+elsewhere in §5 — no new RE claims.
+
+| `install_action` | When it runs vs integrity checks | Traversal / symlink / path escape | Cross-ref |
+|------------------|----------------------------------|-----------------------------------|-----------|
+| **copy** | **Happy path:** streaming FILE (or re-entrant chunk write) runs inside `lib2sp_install_2sp_data` **after** outer BZ2 decode and is tied to the per-TLV digest / internal-check model described in §5.12 (decode first, verify in `lib2sp_install_2sp_data`). **Bypass:** with `--noverifycert` (§5.9), PKCS#7 is skipped while FILE/SCRIPT bodies still stream — treat as **no CMS binding**. **TOCTOU:** if the carrier bytes change between verify and re-open (§5.8), digest verdict and bytes written can diverge. | **High:** arbitrary **absolute** FILE paths; no device allowlist (§5.5). **`fopen64` / `open64` without `O_NOFOLLOW`** — symlink + FILE overwrite pattern (§5.6). Offline `extract_payloads` rejects absolute paths, `..`, NUL (§5.5). | §5.5, §5.6, §5.8, §5.9, §5.12 |
+| **stage** | Same pipeline class as **copy** for SCRIPT TLVs: staged in a growable buffer, finalized on close, then indirect runner. **§5.9:** with verify disabled, scripts still extract and later run via product scripts (`finish.sh` / `deferred_upg.sh`). | Script **target path** choice is product-side; carrier still controls **content** digested when verify is on. Symlink follow on **FILE** opens is the dominant traversal story for collateral writes (§5.6). | §5.6, §5.9 |
+| **dispatch** | Install-phase **`demarshall_2sp_path`** (`0x07`, `0x27`, `0x28`) and the **`0x04`** indirect `< 0x30` path: parse TLV body, then **vtable** into **mkdir** / **link** / **clone** / re-entrant **copy**. Inherits the same **global** ordering as other `lib2sp_install_2sp_data` work (§5.12); **§5.9** applies if CMS verify is off. | **Inherited:** whatever path strings those records embed are subject to the **same lack of sanitization** as FILE destinations until RE shows otherwise (§5.5–5.6). Prefix-only `0x07` wire layout remains open (**A3** in [`pkgstream.md`](pkgstream.md)). | §5.5, §5.6, §5.9, §5.12; `pkgstream.md` A3 |
+| **move** | **`demarshall_2sp_move`** ladder (`0x08`, `0x29`–`0x2B`): rename/move-class updates on the rootfs after parse; same process-wide integrity caveats as **dispatch**. | **High** if source/dest path strings are TLV-controlled without normalization: absolute paths and symlink follow apply to **both** endpoints (same family as §5.5–5.6). | §5.5, §5.6, §5.9 |
+| **mkdir** | Jump-table helper after successful demarshall — not a separate TLV type in the stub map; runs in install phase with the same **verify / kill-switch / TOCTOU** context as sibling actions. | Creates directories under attacker-influenced parents if path records allow (same path-trust class as §5.5). | §5.5, §5.6 |
+| **link** | Jump-table **`lib2sp_do_sym_link`** — explicit symlink creation on the rootfs. | **Direct symlink primitive**; combines with **copy** / open paths that lack **`O_NOFOLLOW`** (§5.6). | §5.6 |
+| **clone** | Jump-table **`lib2sp_do_copy_file`** — file-to-file copy **on the rootfs**, not streaming from the `.pkgstream` blob. | **Both** operands can be absolute; either side can participate in symlink-follow if opens are not hardened (§5.5–5.6). | §5.5, §5.6 |
+
+**Pre-auth work (no install “action” token yet):** header walk, TLV length parsing, and
+**outer BZ2** expansion are **upstream** of `lib2sp_install_2sp_data` (§5.1, §5.12) — CPU /
+memory DoS and crashers, not the same class as **`copy`**/**`stage`**, but they run
+**before** per-TLV digest checks in the documented ordering.
+
+**`unlink` (narrow delete-class):** partial file cleanup in **`lib2sp_write_file`**
+error paths — security relevance is mostly **availability / hygiene**, not traversal;
+see [`pkgstream.md`](pkgstream.md) §10 for the operator token table.
+
 ## 6. Mitigation recommendations
 
 These are device-side fixes (require `lib2sp.so` / `pkgd` rebuild) — the
@@ -483,28 +511,28 @@ offline tooling can flag the gaps but not patch them.
 | 14 | Cap `BZ2_bzDecompress` output: stream-decompress with a per-call output budget (e.g. 16 KiB) and abort if the carrier delivers more than `4× compressed_input` total. Apply on **both** `lib2sp_install_data` and `lib2sp_simple_unpack` (the latter currently bypasses `disallow_compression`). Closes §5.12 | `lib2sp_install_data` | Low (incremental BZ2 already used) |
 | 15 | Authenticate the pkgd RPC: require an authenticated SunRPC client credential (AUTH_UNIX uid/gid check at minimum, ideally AUTH_SHORT or a Unix-socket peer-credential check). Restricts who can speak `pkg_verify_cert_1` and `pkg_get_pkgset_url_1` to root processes that already own the box | `pkgd` RPC accept callback | Medium |
 
-## 7. Using the offline verifier (`opentl.pkgstream --validate-chain`)
+## 7. Using the offline verifier (`lib2spy.pkgstream --validate-chain`)
 
 The verifier mirrors the device's runtime policy enough to catch most of the
 above issues from CI:
 
 ```bash
 # Default chain validation against the bundled (firmware-specific) device roots
-python -m opentl.pkgstream firmware/.../install.pkgstream --validate-chain
+python -m lib2spy firmware/.../install.pkgstream --validate-chain
 
 # CI-strict gate: ALL_VERIFIED + at least one valid chain
-python -m opentl.pkgstream <pkgstream> --validate-chain --strict --quiet
+python -m lib2spy <pkgstream> --validate-chain --strict --quiet
 
 # Pin to the production signer CN we expect — fails on engineering-only carriers
-python -m opentl.pkgstream <pkgstream> --validate-chain \
+python -m lib2spy <pkgstream> --validate-chain \
     --expected-cn prod1.2sp.certs.2wire.com --strict
 
 # Simulate the kill switch being flipped on (and supply the engineering root):
-python -m opentl.pkgstream <pkgstream> --validate-chain \
+python -m lib2spy <pkgstream> --validate-chain \
     --eng-root extracted_eng_root.pem --trust-engcert
 
 # Use a fresh (non-bundled) trust store — no ProvenanceWarning
-python -m opentl.pkgstream <pkgstream> --validate-chain \
+python -m lib2spy <pkgstream> --validate-chain \
     --trust-roots /path/to/firmware-XYZ/etc/pki/cacerts \
     --trust-roots /path/to/firmware-XYZ/etc/pki/roots
 ```
@@ -547,8 +575,8 @@ adds `chain_validation.any_valid` (the ANY-of-N pass condition) and
   is not set by `pkgman_extract_pkg`. A decompile of `lib2sp_simple_unpack`
   to confirm which carrier-supplied bytes reach `BZ2_bzDecompress` would
   let us narrow the §5.12 finding to one path or both.
-* **Live-device confirmation.** Every probe in
-  [`opentl/tests/probes/`](opentl/tests/probes/) is offline-only. A
+* **Live-device confirmation.** Every probe in the historical
+  `opentl/tests/probes/` suite *(removed)* was offline-only. A
   controlled lab-device test (writing a forged carrier signed by a leaked
   engineering key, measuring whether `pkgd` accepts it with
   `trust_engcert=False` vs `True`, or `pkgc --noverifycert 2 -h
@@ -562,7 +590,8 @@ adds `chain_validation.any_valid` (the ANY-of-N pass condition) and
 - [`opentl/data/trust_roots/PROVENANCE.md`](opentl/data/trust_roots/PROVENANCE.md) — bundled-PEM provenance
 - [`pkgstream.md`](pkgstream.md) §9 — pkgstream format and integrity model
 - [`cm_cmdb.md`](cm_cmdb.md) — CMDB control-plane stack
+- [`cmdb_security.md`](cmdb_security.md) — flash dump exposes CMDB secrets; **`keys`/`root_rsa`** feeds TLS/cert paths (bypasses need for live `cmc -i` on some attacks)
 - [`output/nand_rwdata_cm.md`](output/nand_rwdata_cm.md) — `/rwdata/cm/` on-flash story
 - [`security.md`](security.md) — broader device threat framing
 - [`tools.md`](tools.md) — operator guide for the offline verifier CLI
-- [`opentl/tests/probes/`](opentl/tests/probes/) — every weakness above has a probe here
+- Historical pytest probes under `opentl/tests/probes/` *(removed)* — each weakness in §5 **had** a reproducer there; re-add under `lib2spy/tests/` or `tests/` when rebuilt.

@@ -1,37 +1,24 @@
 # Tools and repository layout
 
-**`binwalker`** workflows, **MTD carving**, **`mtd_parts/`** summaries, and repository index.
+**`binwalker`** workflows, **MTD carving**, **`mtd_parts/`** summaries, repository index, **`boardfs`** (MTD + OpenTL TL slices + **`ubi.mtd=`** — see **[boardfs.md](boardfs.md)**), and **`paceflash`** (inventory CLI + **`/etc/fstab`** via **`paceflash.fstab`** — **[paceflash.md](paceflash.md)**).
 
-### Opentla4 dissect probe (`opentl-dissect-probe`)
+### Carrier corpus vs `tlpart` (manual pipeline)
 
-Bundled pass for **carrier corpus vs `tlpart`**: carve **`.pkgstream`** → **`dissect.squashfs`** trees → **`tl-crc-index`** / **`tl-crc-scan`** → **`opentl-analyze`**. Use the **same Python environment** as **`pip install dissect.squashfs`** (repo **`.venv`** recommended).
+There is **no** bundled “dissect probe” CLI anymore. Reproduce the same **carrier vs flash** workflow manually:
 
-```bash
-.venv\Scripts\python.exe -m binwalker opentl-dissect-probe mtd_parts/tlpart.bin \
-  --pkgstream firmware_11.5.1.532678/.../install.pkgstream \
-  --binwalk-json firmware_11.5.1.532678/.../install.pkgstream.json \
-  --work ./work_tl_crc/opentla4_probe_bundle --json
-```
+1. **`python -m binwalker pkgstream-slices`** … **`--unsquash-dissect DIR`** — carve **`.pkgstream`** and (optionally) expand SquashFS slices with **`dissect.squashfs`** into a directory tree.
+2. **`python -m binwalker tl-crc-index --corpus-dir DIR …`** then **`tl-crc-scan`** on **`tlpart.bin`** — CRC anchor hits vs corpus files.
+3. Optional: **`python -m corpus`** / **`tools/squashfs_corpus_grep.py`** for SQLite-backed string search across dissect trees (see repo skills).
 
-Artifacts: **`opentla4_dissect_probe_summary.json`**, **`tl_crc_hits_dissect.json`**, **`opentl_analyze_dissect.json`**. Optionally run **`tl-crc-hits-align`** on the two JSON reports to emit **`tl_crc_hits_alignment.json`**. **`--reuse-corpus`** skips carving when **`pkgstream_dissect_corpus/`** already has roots.
-
-### OpenTL correlation (`opentl-analyze`)
-
-Research-first correlation of **`tlpart.bin`** (or a full flash image) against:
-
-- a **contiguous carved SquashFS** (`--golden`), and/or
-- an **unsquashed directory tree** from a pkgstream slice (`--anchor-dir`), and/or
-- PEM files (`--pem`).
-
-Produces mmap hit lists, per-anchor alignment hints, **`corpus_interpretation`** (match rate by anchor prefix, anchors with multiple physical hits), optional **`--pkgstream`** superblock ranking when **`--golden`** is set, and optional **`--experimental-reader`** stitch validation (requires **`--golden`**). See **[issue.md](issue.md)**.
+Anchor / alignment **JSON reports** that older docs called **`opentl_analyze_*.json`** were produced by removed research code; keep any historical JSON you still need, but do not expect matching CLI flags.
 
 ### NAND logical plane (5268-class TSOP dumps)
 
 For **full-chip** captures such as **`138412032` B** (**`65536 × (2048+64)`**), normalize **before** **`partition-map`**, **`tl-*`** on MTD-relative offsets, or Binwalk over **`tlpart`** slices:
 
 1. **`python -m binwalker nand-translate`** *`PACE … TSOP48.BIN`* **`--out`** *`flash_logical.bin`* **`--mode auto`** — writes **`134217728` B** logical main (**`nand-spare-extract`** or **`--spare-out`** for the **4 MiB** spare stream).
-2. **`python -m binwalker nand-oob-inspect --spare spare.bin`** (or **`--flash`** *raw dump*) — JSON audit of **64 B** spare rows (**OpenTL** fields + **`ntl_compute_spare_xsum`**, **`BootCode`** markers, **`chain_v1`** virt-slot fill); see **[issue.md](issue.md)** **OOB / spare field decode**. Optional **`--spare-chain-replay --chain-length N`** + **`--bbm-json`** **`--virt-block V`** (and/or **`--chain-start-phys`**) appends **`ntl_put_chain_in_array`** mode-2 hop decode (**`opentl/spare_chain_replay.py`**).
-3. **`python -m binwalker partition-map`** / **`carve`** on *`flash_logical.bin`* (or **`carve ... --nand-data-mode auto`** on the raw dump to combine translate + Docker Binwalk).
+2. **`python -m binwalker nand-oob-inspect --spare spare.bin`** (or **`--flash`** *raw dump*) — JSON audit of **64 B** spare rows (**OpenTL** fields + **`ntl_compute_spare_xsum`**, **`BootCode`** markers); see **[issue.md](issue.md)** **OOB / spare field decode**. Optional **`--spare-chain-replay --chain-length N`** + **`--chain-start-phys`** (head physical erase block) appends **`ntl_put_chain_in_array`** mode-2 hop decode (**`opentl/spare_chain_replay.py`**). Flat spare byte length determines erase-band geometry (**`tl_geometry_from_flat_spare`**); optional **`--virt-block`** labels the JSON report only. To resolve **`--chain-start-phys`** from a saved **`binwalker_tl_bbm_v1`** JSON file, use Python: **`BlockMapBuild.from_dict(json.loads(Path('map.json').read_text(encoding='utf-8'))))`** then **`virt_to_phys_block[i]`** (no binwalker **`--bbm-json`** flag).
+3. **`python -m binwalker partition-map`** / **`carve`** on *`flash_logical.bin`* (or **`carve ... --nand-data-mode auto`** on the raw dump to combine translate + Docker Binwalk). **`partition-map`** without **`--mtdparts`** tries **U-Boot env v1** on the **logical** plane (then **`mtd-scan`**); Pace **138412032** B inputs use **128 MiB** remainder math even before normalize, but **linear** **`--extract`** on a raw **inline** file still expects a **logicalized** image—see **`binwalker.extract.flash_layout.FlashImage`**.
 4. Optional: **`python -m binwalker carved-pem-export`** on the carve output dir — rewrite **`pem_certificate`** **`*.bin`** hits as **`*.pem`**.
 
 See **[issue.md](issue.md)** **Dump layout** for why **`auto`** may choose **inline** vs **flat-tail** at this envelope size.
@@ -44,65 +31,41 @@ Implemented **`binwalker`** subcommands aligned with **[issue.md](issue.md)** (*
 |---------|---------|
 | **`tl-layout-detect`** *flash.bin* | **ELF** magic check + **`hsqs`** stride heuristic; **`--json`** for machine output. |
 | **`tl-disklabel`** *image.bin* | **Whole-disk + four slices** (**`match_kind: chain`**), legacy **four-tuple** only (**`chain4`**), **`first_triple`**, and BSD magic **`0x82564557`** (**`bsd_magic`**). May yield **zero** hits if on-disk layout differs from the **`fwupgrade.txt`** printk model. |
-| **`tl-env`** *image.bin* | Find **`bootcmd=if tl checkfstype`** plus nearby **`09 72 f0 f3`** CRC bytes (**`--json`**). |
-| **`tl-probe`** *flash.bin* | One-shot **JSON**: layout + disklabel hit list + env hits + **`0x10000`**-spaced env pairs when present. |
-| **`tl-bbm`** *tlpart.bin* | Emit **`binwalker_tl_bbm_v1`** map: **`--mode linear_v1`** (identity **`virt→phys`**, low confidence), **`heuristic_v1`** (+ scan for **`(1007,5,0)`** uint32 LE in first **512 B** of each erase block), **`synthetic_planted_v1`** (test **`BWTLMAP1`** header), **`brute_reserved_v1`** (slide one contiguous reserved raw band: **`--reserved-start`** slide index **`s`**, default **`virt_blocks`** → identity). **`--out-json`** / **`--json`**. Default logical prefix **`1012×128KiB`** (trim trailing **4 MiB** OOB appendix in standard carves). |
-| **`tl-mount-sim`** *flash.bin* | Mount simulator → **`binwalker_tl_bbm_v1`** (**stats** / **OOB spare walk** / **slide**). Input must be either (a) a **carved `tlpart`** logical image (**`1012×128KiB` + optional OOB tail**) with **`--nand-logical-offset 0`** (default), or (b) a **full-chip TSOP** capture (**138 412 032 B** typical): use **`--nand-logical-offset 0x180000`** so bytes **`0..1.5 MiB`** (loader + mtdoops per **`mtdparts`**) are skipped before OpenTL’s **`1012`** erase blocks. **`--strategy`**, **`--out-bbm`**. |
-| **`tl-extract`** *tlpart.bin* | **`--bbm map.json`** **`--out opentla4.ext2`** — assemble **`opentla4`** virtual sectors **`0x180`…`** (**`0x3C080`** sectors). **`--nand-logical-offset`** overrides BBM JSON when seeking into the same flash file (must match **`tl-mount-sim`**). **`--dry-run`**, **`--verify-uimage`** *reference.bin*, **`--json`** summary. |
+| **`tl-probe`** *flash.bin* | One-shot **JSON**: **`tl-layout-detect`**-style layout summary + **`tl-disklabel`** hit list (**no** env / bootcmd string scan). Former keys **`env_hits`**, **`env_hit_count`**, **`env_primary_backup_pairs`** were removed. |
+| **`tl-bbm`** *tlpart.bin* | **`kernel_replay_v1`**: **`--spare`** flat stream + logical image → **`binwalker_tl_bbm_v1`** JSON; **`--logical-prefix-bytes`**, **`--out-json`**, **`--json`**. Raises **`ValueError`** if spare is missing or unusable. |
+| **`tl-mount`** *flash.bin* | **`opentl.tl_mount.mount_flash_image`**: **`--spare`** (full flat spare) drives **`kernel_replay_v1`** virt→phys; **`--json`** / **`--out-bbm`**. Raises **`ValueError`** if spare is missing, wrong length, or has no mappable rows. |
+| **`opentla4` assembly** (library) | **`import opentl`** exposes **`opentl.driver`**. Assign **`pipeline.bbm`** from **`BlockMapBuild.from_dict(...)`** and **`extract_opentla4(..., auto_build_bbm=False)`**, or **`NandPipeline.build_bbm()`** with a non-empty flat spare on **`spare_path`**. |
 | **`tl-crc-index`** | **`--corpus-dir DIR`** (repeatable) **`--windows full,2048,131072`** **`--out-json idx.json`** — build **`binwalker_tl_crc_v1`** (CRC-32 / zlib polynomial over **full file**, **2048 B** pages, **128 KiB** erase windows). |
 | **`tl-crc-scan`** *image.bin* | **`--index idx.json`** **`--stride N`** **`--workers N`** **`--gpu`** — sliding-window scan; JSON schema **`binwalker_tl_crc_scan_v1`** with **`backend`** **`cpu`** or **`cuda`**. If **`--gpu`** is set but no CUDA device is available (or the kernel fails), **`notes`** explains the fallback and **`backend`** is **`cpu`**. Install GPU support in your venv (from repo root): **`pip install -e "binwalker[cuda]"`** or **`pip install numba`** (needs an NVIDIA driver when you want **`backend: cuda`**). Optional **`--logical-prefix-bytes`**, **`--out-json`**, **`--json`**. |
-| **`tl-crc-hits-align`** | **`--hits-json tl_crc_hits.json`** **`--analyze-json opentl_report.json`** — **`binwalker_tl_crc_hits_alignment_v1`**: GCD of consecutive image offsets, **`residue_mod_erase_top`** (default **128 KiB**), and per-modulus overlap with **`merged_alignment`** from **`opentl-analyze`**. Optional **`--erase-bytes`**, **`--window-size`** (filter scan rows). Use after **`tl-crc-scan`** to relate CRC anchors to string-anchor alignment hints. |
-| **`tl-crc-re`** *image.bin* | **`--env-from tl-env.json`** **`--expected-crc`** (default **`0x0972F0F3`** for printk **`CRC=972f0f3`**) — **`binwalker_tl_crc_re_v1`**: variant probe using env **payload after `crc_offset + 5`** (**CRC+NUL** header per **`fwupgrade.txt`**), then **`locate_hits`** / hole-model fallback. **`verify_against_nvram_crc`** (**`crc_re`**) cross-checks **`kerSysEarlyFlashInit`** (**4092** B / **`0x7f4bc607`**). **`--out-json`**, **`--json`**. |
-| **`tl-bbm-score`** *tlpart.bin* | **`--candidates linear_v1,brute_reserved_v1`** **`--out-json score.json`** — ranks maps via **`binwalker_tl_bbm_score_v1`** (**`ranked`** / **`best`**). Optional **`--index`** (corpus CRC index), **`--uimage-ref`**, **`--reserved-start`** / **`--reserved-window`** (limit **`brute_reserved_v1`** slide range), **`--corpus-stride`**. **`--json`** prints copy to stdout. |
+| **`tl-bbm-score`** | *Not implemented in this repository* (no CLI); corpus ranking was design-only. |
 
 **Map schema (`binwalker_tl_bbm_v1`):** top-level **`schema`**, **`geometry`** (adds boot-trace fields: **`head_pages`**, **`media_pages`**, **`spares_field`**, **`cap_sectors`**, **`geometry_wasted_sectors`**, **`sectors_per_unit`**), duplicate summary **`boot_trace_invariants`**, **`virt_to_phys_block`**, optional **`stats_physical_block_index`**, **`warnings`**, **`input_sha256_logical_prefix`**, optional **`nand_logical_offset`** (byte offset of **`tlpart`** in **`flash_file`**).
 
 **CRC index (`binwalker_tl_crc_v1`):** **`entries_by_crc`** maps **8-digit lowercase hex** CRC keys to lists of **`{relative_path, file_offset, length, window_kind, …}`**; plus **`stride_page`**, **`stride_erase`**, **`window_kinds`**.
 
-**BBM score (`binwalker_tl_bbm_score_v1`):** **`ranked`** rows with **`mode`**, optional **`reserved_slide_start`**, **`total_score`**, **`score_detail`** (ext2 / uImage / corpus fields), physical span hints.
+**BBM score (`binwalker_tl_bbm_score_v1`):** reserved schema name only — no scorer shipped in-tree.
 
 ```bash
 python -m binwalker tl-layout-detect "PACE 5268AC S34ML01G1@TSOP48.BIN" --json
 python -m binwalker tl-disklabel "PACE 5268AC S34ML01G1@TSOP48.BIN" --json
-python -m binwalker tl-env "PACE 5268AC S34ML01G1@TSOP48.BIN" --json
 python -m binwalker tl-probe "PACE 5268AC S34ML01G1@TSOP48.BIN"
 
 # `--verify-uimage` / `--uimage-ref` below use filenames from `carve_deinterleaved/carve_summary.md`
 # after `partition-map`/`carve` on `flash_logical_deinterleaved.bin` (regenerate if missing locally).
 
-python -m binwalker tl-bbm mtd_parts/tlpart.bin --mode linear_v1 --out-json tl_map.json --json
-python -m binwalker tl-bbm mtd_parts/tlpart.bin --mode brute_reserved_v1 --reserved-start 0 --out-json tl_map_brute.json --json
-python -m binwalker tl-extract mtd_parts/tlpart.bin --bbm tl_map.json --out opentla4.ext2 --dry-run --json
-# Optional: compare headers against a chip uImage from the deinterleaved carve (see issue.md)
-python -m binwalker tl-extract mtd_parts/tlpart.bin --bbm tl_map.json --out opentla4.ext2 \
-  --verify-uimage "output/carved_flash/carve_deinterleaved/carved/tlpart_uimage_0x05a45800_24656ebd.bin"
+# python -m binwalker tl-bbm … exits 2 until kernel replay exists; use BlockMapBuild.from_dict for captured maps.
+python -c "from pathlib import Path; from opentl.nand_pipeline import NandPipeline; r=NandPipeline.for_logical_plane('mtd_parts/tlpart.bin').extract_opentla4(dry_run=True); print(r.ext2_magic_ok)"
+# Optional: compare headers against a carved reference uImage (see reference/issue.md)
+python -c "from pathlib import Path; from binwalker.extract.opentl import extract_opentla4; extract_opentla4(Path('mtd_parts/tlpart.bin'), Path('bbm.json'), out_path=Path('opentla4.ext2'), verify_uimage_path=Path('output/carved_flash/carve_deinterleaved/carved/tlpart_uimage_0x05a45800_24656ebd.bin'))"
 
-python -m binwalker opentl-analyze mtd_parts/tlpart.bin \
-  --golden "PACE 5268AC S34ML01G1@TSOP48_carve/carved/tlpart_squashfs_0x03ff5080_8a358306.bin" \
-  --out-json opentl_report.json
-
-# Partial overlap: extracted pkgstream tree only (no contiguous squash golden)
-python -m binwalker opentl-analyze mtd_parts/tlpart.bin \
-  --anchor-dir ./work/pkgstream_large_unsquash \
-  --out-json opentl_corpus_report.json
-
-# CRC corpus + bounded BBM ranking (carve pkgstream, unsquash with dissect.squashfs, then index files)
 python -m binwalker pkgstream-slices .../install.pkgstream --binwalk-json ...pkgstream.json \
   --out ./work/pkgstream_carves --unsquash-dissect ./work/pkgstream_unsquash_dissect
 python -m binwalker tl-crc-index --corpus-dir ./work/pkgstream_unsquash_dissect --windows full,2048,131072 --out-json tl_crc_idx.json
 python -m binwalker tl-crc-scan mtd_parts/tlpart.bin --index tl_crc_idx.json --stride 131072 --workers 4 --out-json tl_crc_hits.json --json
-python -m binwalker tl-crc-hits-align --hits-json tl_crc_hits.json --analyze-json opentl_corpus_report.json --out-json tl_crc_hits_alignment.json --json
-python -m binwalker tl-env "PACE 5268AC S34ML01G1@TSOP48.BIN" --json > tl_env.json
-python -m binwalker tl-crc-re mtd_parts/tlpart.bin --env-from tl_env.json --expected-crc 0x0972F0F3 --out-json tl_crc_re.json --json
 # Prefer chip carve matching fwupgrade /sys1/uImage size (3740634 B). Older bank at 0x3a71400 is shorter — mis-scores --uimage-ref.
-python -m binwalker tl-bbm-score mtd_parts/tlpart.bin \
-  --candidates linear_v1,brute_reserved_v1 --index tl_crc_idx.json \
-  --reserved-start 0 --reserved-window 64 \
-  --uimage-ref "output/carved_flash/carve_deinterleaved/carved/tlpart_uimage_0x05a45800_24656ebd.bin" \
-  --out-json tl_bbm_score.json --json
 ```
 
-**`flash strings.txt` / Ghidra cues** (see **[issue.md](issue.md)** **RE breadcrumbs**): **`TL_debug:`** `mediasize` / `spares` / `head_pages`; **`resetting statsBlock statistics Num Used=…`**; **`kerSysEarlyFlashInit`** NVRAM CRC; **`BootCode`** **`0x840`** strides in the loader/strings extract vs **`hsqs`** carve checks on the full chip.
+**`flash strings.txt` / Ghidra cues** (see **[issue.md](issue.md)** **RE breadcrumbs**): **`TL_debug:`** `mediasize` / `spares` / `head_pages`; **`resetting statsBlock statistics Num Used=…`**; **`kerSysEarlyFlashInit`** early-flash printk; **`BootCode`** **`0x840`** strides in the loader/strings extract vs **`hsqs`** carve checks on the full chip. Spare / OOB field layout is decoded from the dump via **`nand-oob-inspect`** / **`nand-spare-extract`** (see **OOB / spare field decode** in **[issue.md](issue.md)**).
 
 ### Host dependencies: legacy `uImage` and **`dumpimage`**
 
@@ -185,7 +148,7 @@ For this image the heuristics auto-detect everything; the produced ELF has `e_ma
 
 Carve **SquashFS** / **uImage** blobs from a **`.pkgstream`** using offsets from Binwalk v3 **`--log`** JSON (same length rules as **`artifact_carver`** for multi-file **`uImage`**). Writes **`corpus_manifest.json`** (SHA-256 per slice).
 
-For **CRC corpus** and **`opentl-analyze --anchor-dir`**, prefer a **real file tree** from each carved SquashFS image:
+For **CRC corpus** work, prefer a **real file tree** from each carved SquashFS image:
 
 - **`--unsquash-dissect DIR`** — after carving, extract every **`squashfs`** slice under **`DIR/<carve_stem>/`** using **[dissect.squashfs](https://pypi.org/project/dissect.squashfs/)** (`pip install dissect.squashfs` or **`pip install -e "binwalker[dissect]"`**). That library is **AGPL-3.0**; it supports SquashFS **4.x** little-endian (typical firmware). Pass **`DIR`** to **`tl-crc-index --corpus-dir`** so anchors come from **`/etc/os-release`**, scripts, etc., not only raw superblock-adjacent bytes from **`.bin`** carves.
 - Alternative: run host **`unsquashfs -d ...`** on each carved SquashFS blob and point **`--anchor-dir`** / **`tl-crc-index`** at that tree.
@@ -198,9 +161,9 @@ python -m binwalker pkgstream-slices \
   --unsquash-dissect ./work/pkgstream_unsquash_dissect
 ```
 
-Optional: **`write_directory_manifest`** in **`opentl.pkgstream_corpus`** writes **`tree_manifest.json`** (path, size, SHA-256 of file prefixes) for an extracted tree.
+Optional: **`write_directory_manifest`** in **`lib2spy.pkgstream_corpus`** writes **`tree_manifest.json`** (path, size, SHA-256 of file prefixes) for an extracted tree.
 
-### Pkgstream descriptive dump + cryptographic verification (`python -m opentl.pkgstream`)
+### Pkgstream descriptive dump + cryptographic verification (`python -m lib2spy`)
 
 Single CLI for **everything** about a **`.pkgstream`** carrier: full descriptive dump (header + every TLV + every FILE/SCRIPT with verdict + every signer + every certificate + embedded SquashFS/uImage spans), end-to-end integrity verification, and optional payload extraction. The verifier is the on-disk reimplementation of `lib2sp_internal_check_data` (`lib2sp.so` `0x0001E104`) plus the surrounding **PKCS#7 / CMS `SignedData`** envelope and **per-FILE / per-SCRIPT TLV digests**. RSA-PKCS#1 v1.5 over SHA-1 verification needs the optional `cryptography` extra; in-band layers (messageDigest match + per-payload digests) work without it.
 
@@ -208,29 +171,29 @@ Single CLI for **everything** about a **`.pkgstream`** carrier: full descriptive
 pip install -e "binwalker[verify]"   # optional, enables RSA + X.509 cert summaries
 
 # Full descriptive dump + verify (exit 0 = all_verified, 2 = any failure, 1 = parse error)
-python -m opentl.pkgstream \
+python -m lib2spy \
   firmware_11.5.1.532678/11.5.1.532678/install_package/att-5268-11.5.1.532678_prod_lightspeed-install.pkgstream
 
 # Extract every FILE / SCRIPT payload + every X.509 cert (PEM) + raw PKCS#7 envelope to a tree
-python -m opentl.pkgstream <file>.pkgstream --extract ./out_dir
+python -m lib2spy <file>.pkgstream --extract ./out_dir
 
 # Skip RSA, write the full structured report (parser view + verifier view) as JSON
-python -m opentl.pkgstream <file>.pkgstream --no-rsa --out-json verify.json --quiet
+python -m lib2spy <file>.pkgstream --no-rsa --out-json verify.json --quiet
 
 # Offline X.509 chain validation against the bundled device PEMs (mirrors
 # pki_ver_setup_trust_roots + lib2sp_check_data ANY-of-N policy). Exits 0 only
 # when ALL_VERIFIED + at least one signer chain validates.
-python -m opentl.pkgstream <file>.pkgstream --validate-chain --strict --quiet
+python -m lib2spy <file>.pkgstream --validate-chain --strict --quiet
 
 # Pin to the production signer CN — fails on engineering-only carriers.
-python -m opentl.pkgstream <file>.pkgstream --validate-chain \
+python -m lib2spy <file>.pkgstream --validate-chain \
     --expected-cn prod1.2sp.certs.2wire.com --strict
 
 # Programmatic — same data, no shell
-python -c "from opentl import verify_pkgstream, format_report; print(format_report(verify_pkgstream(r'<file>.pkgstream')))"
+python -c "from lib2spy import verify_pkgstream, format_report; print(format_report(verify_pkgstream(r'<file>.pkgstream')))"
 ```
 
-> The earlier `binwalker pkgstream-verify` subcommand has been retired — `python -m opentl.pkgstream` is a strict superset (every flag plus the descriptive dump and `--extract`). See [pkgstream.md § 9.9](pkgstream.md#99-cli) for the full surface.
+> The earlier `binwalker pkgstream-verify` subcommand has been retired — `python -m lib2spy` is a strict superset (every flag plus the descriptive dump and `--extract`). See [pkgstream.md § 9.9](pkgstream.md#99-cli) for the full surface.
 
 The verifier reports:
 
@@ -239,16 +202,25 @@ The verifier reports:
 - `files_verified` / `scripts_verified` — per-FILE (`0x01`/`0x03`/`0x2F`) and per-SCRIPT (`0x26`) TLV digest checks (algorithm tag from the TLV body: SHA-1 / MD5 / SHA-256).
 - `legacy_dpi_sig_present` — true when the older `0x3E8` DPI signature TLV is present (not used in the 5268 firmware drops).
 
-Tamper detection: byte flips in the file-payload region trip per-FILE digest; flips inside the signed prefix trip `messageDigest` match — both surface as `all_verified=False`. Implementation in [`opentl/pkgstream_verify.py`](opentl/pkgstream_verify.py); full algorithm and trust-chain notes in [pkgstream.md § 9 — Integrity model](pkgstream.md#9-integrity-model); test corpus in [`opentl/tests/test_pkgstream_verify.py`](opentl/tests/test_pkgstream_verify.py).
+Tamper detection: byte flips in the file-payload region trip per-FILE digest; flips inside the signed prefix trip `messageDigest` match — both surface as `all_verified=False`. Implementation in [`lib2spy/pkgstream_verify.py`](lib2spy/pkgstream_verify.py); full algorithm and trust-chain notes in [pkgstream.md § 9 — Integrity model](pkgstream.md#9-integrity-model). *(Pkgstream verifier unit tests: add under `lib2spy/tests/` when rebuilt.)*
 
-**Operational security analysis:** [`pkgstream_security.md`](pkgstream_security.md) — gating logic (`trust_engcert`, signer CN pin), trust anchor inventory, weaknesses (path overwrite, decompression bomb, SHA-1 messageDigest, symlink follow during extract, ANY-of-N edge cases), and reproducible probes under [`opentl/tests/probes/`](opentl/tests/probes/). When pointed at a different firmware family, supply your own `--trust-roots DIR` to silence the bundled-PEM `ProvenanceWarning`; bundled PEM provenance lives in [`opentl/data/trust_roots/PROVENANCE.md`](opentl/data/trust_roots/PROVENANCE.md).
+**Operational security analysis:** [`pkgstream_security.md`](pkgstream_security.md) — gating logic (`trust_engcert`, signer CN pin), trust anchor inventory, weaknesses (path overwrite, decompression bomb, SHA-1 messageDigest, symlink follow during extract, ANY-of-N edge cases), and **historical** reproducible probes *(same note: former `opentl/tests/probes/` removed)*. When pointed at a different firmware family, supply your own `--trust-roots DIR` to silence the bundled-PEM `ProvenanceWarning`; bundled PEM provenance lives in [`opentl/data/trust_roots/PROVENANCE.md`](opentl/data/trust_roots/PROVENANCE.md).
 
 ## Binwalk signatures vs MTD-aligned carving
 
-A **`*.BINWALK`** report (signature hits at arbitrary offsets) does **not** define partition boundaries: bytes at offset **`0x21000`** might be an ELF inside **`tlpart`**, not “start of flash.” To carve **loader** / **mtdoops** / **`tlpart`** from a full chip dump, use the same **`mtdparts`** string the kernel uses, then slice the file by **offset and size**. The **`binwalker partition-map`** command builds that table (from **`--mtdparts`** or by reusing the best **`mtdparts=`** string found in a **`mtd-scan`** of the dump) and can write raw per-partition binaries plus **`partition-map.json`**.
+A **`*.BINWALK`** report (signature hits at arbitrary offsets) does **not** define partition boundaries: bytes at offset **`0x21000`** might be an ELF inside **`tlpart`**, not “start of flash.” To carve **loader** / **mtdoops** / **`tlpart`** from a full chip dump, use the same **`mtdparts`** string the kernel uses, then slice the file by **offset and size**.
+
+The **`binwalker partition-map`** command resolves **`mtdparts`** via [`binwalker.extract.flash_layout`](../binwalker/extract/flash_layout.py) **`build_layout_interactive`** in this order when **`--mtdparts`** is omitted:
+
+1. **U-Boot env v1** on the **logical data plane**: CRC-checked env images at common sizes, probed at **loader** (logical offset **0**) and at a **heuristic** OpenTL disklabel env offset (**`tlpart`** start from default layout + **8×512** B). Reads use **`unand.layout.read_logical_plane_interval`** so **inline 2048+64** and **flat-tail** full-chip dumps are addressed in **logical** space without copying the whole plane.
+2. Else **`mtd-scan`** string heuristics (best embedded **`mtdparts=`** table that lays out cleanly).
+
+For **Pace-class** full-chip sizes (**`138412032`** B inline / flat-tail envelope), remainder partitions (**`-(tlpart)`**) are sized against the **128 MiB** logical plane (**`effective_mtd_reference_size`**), not the raw file length.
+
+Stdout prints **`Mtdparts:`** (resolved token or line), **`Layout source:`** (`explicit` / `uboot-env` / `mtd-scan`), and any **notes** (e.g. env offset/size). With **`--extract`**, **`partition-map.json`** may include **`layout_source`** and **`layout_notes`** when present. **`carve`** passes the same fields into its manifest.
 
 ```bash
-# Derive mtdparts from strings embedded in the .BIN (typical 5268-class layout)
+# Resolve mtdparts (env v1 on logical plane, else mtd-scan); typical 5268-class layout
 python -m binwalker partition-map "PACE 5268AC S34ML01G1@TSOP48.BIN" --extract out_parts
 
 # Or pass the cmdline layout explicitly
@@ -262,11 +234,15 @@ Slicing is **MTD layer only**; layout **inside** **`tlpart`** (OpenTL / `opentla
 
 After **`partition-map --extract`**, [ReFirmLabs binwalk](https://github.com/ReFirmLabs/binwalk) v3 (e.g. via Docker) can be run on each **`.bin`**; machine output is **`*.json`** and agent-oriented summaries **`*.md`**. This table ties together **[`partition-map.json`](mtd_parts/partition-map.json)** and high-signal hits in **[`loader.bin.json`](mtd_parts/loader.bin.json)**, **[`mtdoops.bin.json`](mtd_parts/mtdoops.bin.json)**, and **[`tlpart.bin.json`](mtd_parts/tlpart.bin.json)** (the last is large; prefer **`tlpart.bin.md`** for a short table, **JSON** for exact offsets).
 
+**Ghidra / paceflash on loader vs mtdoops vs tlpart:** Kernel **`opentl_add_mtd`** binds only **`tlpart`**; **`loader`** holds U-Boot env + ELF; **`mtdoops`** is the panic ring (**`mtdoops.record_size=131072`** on product cmdline). MCP notes: **[`ghidra_mtd_loader_mtdoops_mcp.md`](ghidra_mtd_loader_mtdoops_mcp.md)**. On a full dump (after **`nand-translate`**), **`python -m paceflash ls --probe-loader-env --probe-mtdoops`** parses env and scans mtdoops without OpenTL BBM ([`paceflash/mtd_partition_probes.py`](../paceflash/mtd_partition_probes.py)).
+
+**`opentla4` ext2 (post-upgrade squash in files):** After promote, **`rootimage.img`** / **`ui.img`** live inside an **ext2** volume on **`opentla4`**, not as raw partition squash — see **[`ghidra_squashfs_flash_read_gap_mcp.md`](ghidra_squashfs_flash_read_gap_mcp.md)**. **Working on PACE full dump (May 2026):** **`python -m paceflash --flash "PACE …BIN" ls`**, **`ls sys1`**, **`cat sys1/rootimage.img`**, or **`shell`** (flash loaded once). Full inventory / extract: **`ls --debug`**, **`--extract-ext2-dir`**, **`--dump-opentla4-ext2`** — **[`paceflash.md`](paceflash.md)**. Requires **`pip install -e ".[dissect]"`**.
+
 **Inline NAND:** **`mtd_parts/`** here reflects **legacy** extraction when **`mtdparts`** offsets were applied **directly** to the raw **`.BIN`**. For **PACE** TSOP48 (**verified inline**), chip-grounded Binwalk anchors are under **`output/carved_flash/carve_deinterleaved/`** on **`flash_logical_deinterleaved.bin`** — see **[issue.md](issue.md)** diagram + **NAND logical plane** above.
 
 | Source | Takeaway |
 |--------|----------|
-| **`partition-map.json`** | Full dump **`PACE … TSOP48.BIN`** size **138412032** bytes (~132 MiB envelope). MTD byte ranges are **logical** addresses: **loader** `0x0`–`0x80000`, **mtdoops** `0x80000`–`0x180000`, **tlpart** `0x180000`–`0x8000000` on the **128 MiB data plane** (`mtdparts=mtd-0:524288(loader),1048576(mtdoops),-(tlpart)`). Apply to **`nand-translate`** output (or equivalent), not necessarily to raw inline file offsets. |
+| **`partition-map.json`** | Full dump **`PACE … TSOP48.BIN`** size **138412032** bytes (~132 MiB envelope). MTD byte ranges are **logical** addresses: **loader** `0x0`–`0x80000`, **mtdoops** `0x80000`–`0x180000`, **tlpart** `0x180000`–`0x8000000` on the **128 MiB data plane** (`mtdparts=mtd-0:524288(loader),1048576(mtdoops),-(tlpart)`). Apply to **`nand-translate`** output (or equivalent), not necessarily to raw inline file offsets for **linear** slice I/O. Optional keys **`layout_source`** / **`layout_notes`** record how **`mtdparts`** was resolved (**`uboot-env`**, **`mtd-scan`**, or **`explicit`**). |
 | **`loader.bin`** | **MIPS32 big-endian ELF** at **`0x21000`** in the loader slice; **U-Boot `1.3.3(8.99.61.509224)`** (Aug 5 2015) string at **`0x58500`** — same stack called out in serial/`BINWALK` work. |
 | **`mtdoops.bin`** | Binwalk **no `file_map` signatures** on this carve (expected for a dedicated oops/log MTD: unstructured or empty in this snapshot). |
 | **`tlpart.bin`** | **uImage / install/recovery image:** signature **`uimage`** reports **Multi-File Image**, **gzip**, **MIPS32**, **Linux**, load **`0x80010000`**, entry **`0x804583E0`**, image name **`Install image (5268/att)`** — same family U-Boot loads from **`/sys1/uImage`** in **`fwupgrade.txt`**. Multiple embedded generations appear in the JSON (e.g. **2021-11-30** and **2023-05-04** creation times on different **`uImage`** hits). **Within-`tlpart` offset** for one strong hit: **`61281280`** (**`0x3A71400`**); **absolute** in the full dump: **`1572864 + 61281280 = 62854144`** (**`0x3BF1400`**). |
@@ -287,10 +263,10 @@ Paths and artifacts may change over time; treat this as an index rather than exh
 | **`fwupgrade.txt`** | Serial capture — see **[firmware.md](firmware.md)** and **[hardware.md](hardware.md)**. |
 | **`linux-stable-rt-3.4.11-rt19/`** | Optional **`linux-stable-rt`** checkout at **`78475c9d785a6d7b3d110e8ebcc9a4d6f1ff473b`** (`Linux 3.4.11-rt19`) — merged upstream RT kernel matching device **`Linux version 3.4.11-rt19`** printks. |
 | **`linux-3.4-rt-patches-3.4.11-rt19/`** | Optional **`3.4-rt-patches`** quilt (tag **`3.4.11-rt19`**) — same RT release as patch files for bisect-style reading. |
-| **`binwalker/`** | Python helpers: firmware sniffing (`scan`), **`mtd-scan`**, **`partition-map`**, **`signals-scan`**, **`full-scan`**, **`carve`**, OpenTL **`opentl-analyze`** / **`tl-*`** (**layout**, **BBM**, **extract**, **CRC corpus**, **BBM score**) — see **[issue.md](issue.md)**. |
+| **`binwalker/`** | Python helpers: firmware sniffing (`scan`), **`mtd-scan`**, **`partition-map`**, **`signals-scan`**, **`full-scan`**, **`carve`**, OpenTL **`tl-*`** (**layout**, **BBM**, **extract**, **CRC corpus**, **BBM score**) — see **[issue.md](issue.md)**. |
 | **`mtd_parts/`** | Carved MTD slices (`loader.bin`, `mtdoops.bin`, `tlpart.bin`), **`partition-map.json`**, and binwalk **`*.json` / `*.md`** — table above. |
 | **Flash / binwalk outputs** | e.g. `*.BIN`, `*.BINWALK`, `flash strings.txt` — large references; not always committed. |
-| **Scripts** | `analyze_flash.py`, `flash_scanner.py`, etc. — older entry points; prefer **`python -m binwalker …`**. Downloads: **`download`** / **`analyze`**, not the legacy **`firmware_downloader`** shim. |
+| **Scripts** | `analyze_flash.py`, `flash_scanner.py`, etc. — older entry points; prefer **`python -m binwalker …`**. **`python -m binwalker download`** / **`download-all`** were **removed**; use **`firmware_downloader.py`** / **`binwalker.downloader`** only if you still need programmatic downloads. Prefer **`python -m lib2spy.pkgstream`** for **`.pkgstream`** verification. |
 
 ### Example commands
 

@@ -107,7 +107,7 @@ For grep-style symbol lookup across ELFs under **`bin`/`usr/bin`/`lib`/`usr/lib`
 ### Open questions (for NAND dump analysis)
 
 - ~~Default **`cmdb_attr_setdbdir`** path~~ — **`etc/sv/cmd/run`** invokes **`cmd --dbdir /rwdata/cm --start`** (see [`output/sv_runit_busybox_re.md`](output/sv_runit_busybox_re.md)); **`serviceinit`** runs **`sv up cmd`** before **`rgwdbsetup`** so CMDB is up first.
-- Whether password blobs are **hashed at rest** only, or **encrypted** with a device key (follow **`tw_ulib_pwd_get_passwd`** **`param_5 == 2`** branch vs OpenSSL symbols in **`librgw_compat`**).
+- Whether password blobs are **hashed at rest** only, or **encrypted** with a device key (follow **`tw_ulib_pwd_get_passwd`** **`param_5 == 2`** branch vs OpenSSL symbols in **`librgw_compat`**). The ext2 install tree **`/cm`** directory block on opentla4 is **opaque** on factory PACE dumps — see [`pace_ext2_cm_directory.md`](pace_ext2_cm_directory.md); durable CMDB files are under **`/rwdata/cm`**, not ext2 dirents.
 - Whether **`cmshmem`** maps a **single file** or **anonymous shared memory** (finish **`cmshmem_rw_open`** decompilation + xref **`mmap`** args).
 
 ## Ghidra reverse-engineering checklist (continued work)
@@ -119,6 +119,7 @@ For grep-style symbol lookup across ELFs under **`bin`/`usr/bin`/`lib`/`usr/lib`
 
 ## See also
 
+- [`pace_ext2_cm_directory.md`](pace_ext2_cm_directory.md) — ext2 **`/cm`** (inode **6833**) vs UBIFS **`/rwdata/cm`**; why **`paceflash ls cm`** is opaque on PACE NAND.
 - [`output/nand_rwdata_cm.md`](output/nand_rwdata_cm.md) — finding **`/rwdata/cm`** in **NAND / MTD** dumps (`tlpart`, UBIFS, OpenTL part **5**).
 - [`output/cmdb_ondisk_format.md`](output/cmdb_ondisk_format.md) — **`libcm_server`** **`_cmdb_load`** / **oplist** / XML-type strings.
 - [`output/carved_flash/README_extraction.md`](output/carved_flash/README_extraction.md) — **`tlpart`** OpenTL **`opentla4`** extract attempt on factory carve.
@@ -130,6 +131,7 @@ For grep-style symbol lookup across ELFs under **`bin`/`usr/bin`/`lib`/`usr/lib`
 - [`httpd.md`](httpd.md) — web stack; links here for CM vs UI config.
 - [`httpd_endpoints.md`](httpd_endpoints.md) — **`cm_tran_*`** in HURL path.
 - [`output/cm_scrape_parsed.md`](output/cm_scrape_parsed.md) — **`CM:*`** page commands from XSLT (`GETLIST`, `LOCK`, `COMMIT`, etc.); machine JSON [`cm_scrape_parsed.json`](output/cm_scrape_parsed.json), tool [`tools/parse_cm_scrape.py`](tools/parse_cm_scrape.py).
+- [`cmdb_security.md`](cmdb_security.md) — flash confidentiality, `bdc`/`keys` consumers, URL/cloud notes.
 - [`security.md`](security.md) — threat framing.
 - [`opentl_kernel_ghidra.md`](opentl_kernel_ghidra.md) — NAND **`tlpart`** / **`opentl`**.
 - [`tools/elf_symbol_master.py`](tools/elf_symbol_master.py) — grep-friendly import/export index.

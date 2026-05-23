@@ -4,6 +4,8 @@ This document describes the **on-disk byte layout** of ATT / 2Wire-style **`.pkg
 
 **Scope:** **`lib2sp`** parses the **2SP byte stream** (header, TLV metadata, optional **bzip2** wrapper, payload TLVs). **HTTP/TLS**, **CMS/package orchestration**, and **`libpkg_*`** RPC layers sit **above** the raw file when downloading from the CDN; they do not alter the **local file bytes** once saved as `.pkgstream`.
 
+**Runtime deep dive** (prefix walk vs payload region, FILE/SCRIPT extraction semantics, CONFIG vs RUN TLVs, shell-script orchestration, SquashFS as bytes vs host mount): **[§10](#10-lib2sp-runtime-tlvs-payloads-scripts-and-squashfs)**.
+
 ---
 
 ## 1. Relationship diagram
@@ -71,9 +73,9 @@ Paths are **project paths** in Ghidra **`5268ac`** (imported rootfs layout). **E
 
 | Artifact | Purpose |
 |----------|---------|
-| [opentl/native_pkgstream.py](opentl/native_pkgstream.py) | Header/TLV helpers, optional `BZh` unwrap, **`scan_embedded_images`** (SquashFS / uImage) |
+| [lib2spy/native_pkgstream.py](lib2spy/native_pkgstream.py) | Header/TLV helpers, optional `BZh` unwrap, **`scan_embedded_images`** (SquashFS / uImage) |
 | [opentl/pkgstream_format_lib2sp.md](opentl/pkgstream_format_lib2sp.md) | Short summary |
-| [opentl/pkgstream_corpus.py](opentl/pkgstream_corpus.py) | `extract_pkgstream_slices` (Binwalk JSON) vs `extract_pkgstream_slices_native` |
+| [lib2spy/pkgstream_corpus.py](lib2spy/pkgstream_corpus.py) | `extract_pkgstream_slices` (Binwalk JSON) vs `extract_pkgstream_slices_native` |
 
 ---
 
@@ -167,6 +169,8 @@ blockDiagram
 
 ## 5. TLV types (payload dispatch)
 
+For how the **linear TLV prefix** connects to the **PKCS#7 envelope**, the **file-payload byte region**, prefix-only types such as **`0x2E` / `0x07`**, and how **SCRIPT** bodies relate to on-device install order, see **[§10](#10-lib2sp-runtime-tlvs-payloads-scripts-and-squashfs)**.
+
 **Ghidra:** `lib2sp_do_payload_tlv` switches on TLV **type**.
 
 | `type` (hex) | Decimal | Handler / notes |
@@ -227,7 +231,9 @@ Runtime errors reference **bzip2** failures on **member** streams; carving **Squ
 | SquashFS LE | **`hsqs`** | LE **`bytes_used`** at superblock **+40** |
 | Legacy uImage | BE **`0x27051956`** | **`64 + ih_size`**, **`ih_size`** at header **+12** BE |
 
-Offsets match Binwalk **`file_map`** for the 5268 sample when using [opentl/native_pkgstream.py](opentl/native_pkgstream.py) **`scan_embedded_images`**.
+Offsets match Binwalk **`file_map`** for the 5268 sample when using [lib2spy/native_pkgstream.py](lib2spy/native_pkgstream.py) **`scan_embedded_images`**.
+
+**Mount vs carve:** `lib2sp` does not attach these blobs as kernel filesystems by itself; see **[§10](#10-lib2sp-runtime-tlvs-payloads-scripts-and-squashfs)** (subsection *SquashFS, uImage, embedded blobs, and mount*) for how embedded SquashFS relates to **FILE** payloads, **magic scans**, and host **`unsquashfs`** / corpus tooling ([`tools.md`](tools.md) § *Pkgstream slices*).
 
 ---
 
@@ -258,7 +264,7 @@ The pkgstream format pushes integrity onto **three distinct cryptographic layers
 2. **Per-FILE / per-SCRIPT TLV digests** (predominantly SHA-1, also MD5 / SHA-256) — bind each file payload back to the signed manifest.
 3. **U-Boot `ih_hcrc` / `ih_dcrc`** on the embedded uImage — corruption-only, runs at install + boot, not used by `lib2sp`.
 
-The reverse-engineered control flow lives in `lib2sp_internal_check_data` (`0x0001E104`) and the FILE / SCRIPT demarshallers; the algorithm is reimplemented (with full negative-path coverage) in [`opentl/pkgstream_verify.py`](opentl/pkgstream_verify.py) and exposed via the [`opentl.pkgstream`](opentl/pkgstream.py) CLI (`python -m opentl.pkgstream …`). Findings here are ground-truthed against the live ATT 5268 install pkgstream — see §9.8 for the test corpus.
+The reverse-engineered control flow lives in `lib2sp_internal_check_data` (`0x0001E104`) and the FILE / SCRIPT demarshallers; the algorithm is reimplemented (with full negative-path coverage) in [`lib2spy/pkgstream_verify.py`](lib2spy/pkgstream_verify.py) and exposed via the [`lib2spy.pkgstream`](lib2spy/pkgstream.py) CLI (`python -m lib2spy …`). Findings here are ground-truthed against the live ATT 5268 install pkgstream — see §9.8 for the test corpus.
 
 > **Older / unused path:** the **`0x3E8` DPI signature TLV** (`demarshall_2sp_dpi_sig`, `0x000148D0`) is documented in `lib2sp.so` but **does not appear** in any of the 5268 samples we have. It is a legacy in-band integrity scheme superseded by the PKCS#7 envelope below. The verifier still flags its presence (`legacy_dpi_sig_present` in the report) for older firmware drops.
 
@@ -395,7 +401,7 @@ The first `Verifying Checksum` is the install-time integrity check immediately a
 
 ### 9.6 What our local tooling does (and does **not**) verify
 
-[`opentl/native_pkgstream.py`](opentl/native_pkgstream.py) provides the **structural** primitives (header walk, TLV iteration, optional `BZh` unwrap, magic / superblock scans), and now embeds an optional `verify=True` argument that delegates to [`opentl/pkgstream_verify.py`](opentl/pkgstream_verify.py). The verifier is the on-disk reimplementation of `lib2sp_internal_check_data` and covers every layer in §9.1 *except* full chain validation against installed root CAs (the `att_cms-certs.pkgstream` step is currently scope-blocked — the cert set itself is summarized but not chained to a configured trust store).
+[`lib2spy/native_pkgstream.py`](lib2spy/native_pkgstream.py) provides the **structural** primitives (header walk, TLV iteration, optional `BZh` unwrap, magic / superblock scans), and now embeds an optional `verify=True` argument that delegates to [`lib2spy/pkgstream_verify.py`](lib2spy/pkgstream_verify.py). The verifier is the on-disk reimplementation of `lib2sp_internal_check_data` and covers every layer in §9.1 *except* full chain validation against installed root CAs (the `att_cms-certs.pkgstream` step is currently scope-blocked — the cert set itself is summarized but not chained to a configured trust store).
 
 What's checked by the verifier:
 
@@ -422,13 +428,13 @@ We additionally record **post-hoc SHA-256** over carved artifacts as our own aud
 
 | Artifact | What it hashes | File |
 |----------|----------------|------|
-| `corpus_manifest.json` (carved slices) | SHA-256 of every carved blob | [`pkgstream_corpus.py`](opentl/pkgstream_corpus.py) |
-| `tree_manifest.json` (unpacked tree) | SHA-256 of file prefixes | [`pkgstream_corpus.py`](opentl/pkgstream_corpus.py) |
-| Native carve manifest | SHA-256 of native-carved slices | [`native_pkgstream.py`](opentl/native_pkgstream.py) |
+| `corpus_manifest.json` (carved slices) | SHA-256 of every carved blob | [`pkgstream_corpus.py`](lib2spy/pkgstream_corpus.py) |
+| `tree_manifest.json` (unpacked tree) | SHA-256 of file prefixes | [`pkgstream_corpus.py`](lib2spy/pkgstream_corpus.py) |
+| Native carve manifest | SHA-256 of native-carved slices | [`native_pkgstream.py`](lib2spy/native_pkgstream.py) |
 
 ### 9.7 Verification algorithm (full pipeline)
 
-This is what [`python -m opentl.pkgstream`](opentl/pkgstream.py) implements. Pseudocode in the order it actually runs:
+This is what [`python -m lib2spy`](lib2spy/pkgstream.py) implements. Pseudocode in the order it actually runs:
 
 ```text
 1.  raw   = read(file)
@@ -498,10 +504,10 @@ Note for the prefix-tamper case: the per-signer RSA signature still verifies as 
 
 ### 9.9 CLI
 
-The canonical entry point is the `opentl.pkgstream` module — a *full descriptive dump* by default plus optional verification and payload extraction in one tool:
+The canonical entry point is the `lib2spy.pkgstream` module — a *full descriptive dump* by default plus optional verification and payload extraction in one tool:
 
 ```text
-python -m opentl.pkgstream <pkgstream_file>
+python -m lib2spy <pkgstream_file>
                            [--extract DIR]
                            [--no-verify] [--no-rsa]
                            [--json] [--out-json out.json] [--quiet]
@@ -514,15 +520,18 @@ Exit code: `0` on `all_verified=True` (or with `--no-verify`), `2` on integrity 
 The same data is available programmatically:
 
 ```python
-from opentl import verify_pkgstream, format_full_report, extract_payloads
-rep = verify_pkgstream("install.pkgstream")           # VerifyReport (every layer)
-extract_payloads("install.pkgstream", "out_dir/")     # filesystem mirror + certs + manifest
-print(format_full_report(rep, parsed_dict))           # rich text dump
+from lib2spy import verify_pkgstream, format_report, extract_payloads
+
+rep = verify_pkgstream("install.pkgstream")  # VerifyReport (every layer)
+print(format_report(rep))
+extract_payloads("install.pkgstream", "out_dir/")  # filesystem mirror + certs + manifest
 ```
 
-Setting `analyze_pkgstream(... verify=True)` (in `opentl.native_pkgstream`) embeds the verify report under a `"verify"` key in the analyzer's output for downstream JSON pipelines.
+For the combined parse + verify text dump, obtain the parser’s `parsed` dict (e.g. from `python -m lib2spy --dump` JSON or other `lib2spy` parse entry points) and pass it to `lib2spy.pkgstream.format_full_report`.
 
-> The earlier `binwalker pkgstream-verify` subcommand has been retired; `python -m opentl.pkgstream` is a strict superset.
+Setting `analyze_pkgstream(... verify=True)` (in `lib2spy.native_pkgstream`) embeds the verify report under a `"verify"` key in the analyzer's output for downstream JSON pipelines.
+
+> The earlier `binwalker pkgstream-verify` subcommand has been retired; `python -m lib2spy` is a strict superset.
 
 ### 9.10 Live-fire findings — install state machine, SCRIPT bytecode, trust store
 
@@ -534,7 +543,7 @@ Captured 2026-05-10 from `att_cms-certs.pkgstream` round-trip and Ghidra MCP ana
 > `tw_ulib_get_trust_2sp_cn`, `lib2sp_check_data` flow). The operational security
 > analysis (gating, weaknesses, reproducible probes) lives in
 > [`pkgstream_security.md`](pkgstream_security.md). The offline verifier
-> ([`opentl/pkgstream_verify.py`](opentl/pkgstream_verify.py)) now mirrors the
+> ([`lib2spy/pkgstream_verify.py`](lib2spy/pkgstream_verify.py)) now mirrors the
 > device's ANY-of-N policy with `validate_chain=True`, including the
 > `trust_engcert` and signer-CN gates.
 >
@@ -546,10 +555,7 @@ Captured 2026-05-10 from `att_cms-certs.pkgstream` round-trip and Ghidra MCP ana
 > process on the device. BZ2 outer decompression in `lib2sp_install_data`
 > runs **before** the SP/TLV digest gate. See
 > [`pkgstream_security.md`](pkgstream_security.md) §5.9–5.13 for the
-> findings, with reproducible probes in
-> [`opentl/tests/probes/test_pkgd_verify_kill_switch.py`](opentl/tests/probes/test_pkgd_verify_kill_switch.py)
-> and
-> [`opentl/tests/probes/test_pkgd_pre_verify_decompression.py`](opentl/tests/probes/test_pkgd_pre_verify_decompression.py).
+> findings, with historical reproducible probes *(former `opentl/tests/probes/`; tree removed — see [`pkgstream_security.md`](pkgstream_security.md))* named **`test_pkgd_verify_kill_switch`** and **`test_pkgd_pre_verify_decompression`**.
 
 **SCRIPT TLV bodies are plain `/bin/sh` shell scripts.** Not bytecode. Every SCRIPT we have is a POSIX shell script with a `#!/bin/sh` shebang; the install state machine is just `start.sh → (write FILE_n + post_n.sh) × N → finish.sh`, with `error.sh` as the rollback path. Live mapping for `att-5268-…install.pkgstream` (13 SCRIPTs):
 
@@ -615,10 +621,149 @@ Trust anchors are therefore **factory-static** in 11.5.1 — burnt into the devi
 
 ---
 
-## 10. References
+## 10. lib2sp runtime: TLVs, payloads, scripts, and SquashFS
+
+This section ties together **wire layout**, **what `lib2sp` dispatches** vs **opaque prefix records**, **where payloads live**, **how shell scripts participate in install**, and **how SquashFS bytes relate to mounting**. It complements §5–§9 without replacing them: numeric offsets for PKCS#7 on the reference carrier stay in **§9.3**; the FILE/SCRIPT field matrix stays in **§9.4**. Implementation ground truth for parsing and verification lives in [`lib2spy/pkgstream_verify.py`](../lib2spy/pkgstream_verify.py) (`parse_file_tlv_body`, `parse_script_tlv_body`, `_verify_*`) and structural helpers in [`lib2spy/native_pkgstream.py`](../lib2spy/native_pkgstream.py).
+
+### End-to-end byte map
+
+Think of the decompressed/normalized **body** (after optional outer **bzip2**, see §6) as one contiguous address space:
+
+```mermaid
+flowchart LR
+  subgraph body [Normalized_body_bytes]
+    H[Header_2WIRE_SP_24]
+    TLVs[Linear_TLV_prefix]
+    P7[DER_PKCS7_SignedData]
+    Pay[FILE_and_SCRIPT_payload_region]
+    Pem[Optional_trailing_PEM]
+  end
+  H --> TLVs --> P7 --> Pay --> Pem
+```
+
+- **Signed by PKCS#7:** the slice `body[0..pkcs7_offset)` — i.e. **header + every byte of the TLV prefix up to (but not including) the PKCS#7 blob** (§9.3). Changing any prefix TLV or header field invalidates every signer’s `messageDigest`.
+- **Not inside the DER blob:** file and script **payload bytes** live **after** `pkcs7_end` in the concatenated **payload region**. Each FILE/SCRIPT TLV in the prefix carries **offsets and sizes** pointing into that region, plus a **per-record digest** (`hash_alg`, digest at `hash_offset` / `hash_length` inside the TLV body) checked by `lib2sp_internal_check_data` / `verify_hash_alg` (§9.2–§9.4).
+- **Trailing PEM:** optional X.509 material after the payload region; reported by the offline verifier when present (§9.3 table).
+
+### TLV prefix walk
+
+From file offset **`0x18`** immediately after the 24-byte header, records are **`>II`** — big-endian **`type`**, **`length`**, then **`length`** bytes of payload (§3.2, §4). [`iter_tlvs_prefix_only`](../lib2spy/native_pkgstream.py) mirrors the installer’s **linear** scan: it keeps consuming records while each `(type, length)` fits in the buffer. When the next record would overhang EOF, or when the stream ceases to look like TLVs (e.g. the next bytes begin **`30 82`** DER for PKCS#7), the **prefix ends** — the remainder is **not** a single continuous TLV chain.
+
+Two practical consequences:
+
+1. **Not every interesting byte is a “payload TLV”.** Many carriers carry **dozens of prefix TLVs** (version, role, hardware descriptor, unknown record tables — §9.10 table) that are **not** listed in §5’s `lib2sp_do_payload_tlv` switch. They are still **hashed into** `body[0..pkcs7_offset)` and therefore **covered by the CMS signature**.
+2. **Dispatch vs metadata.** §5 documents only the types **`lib2sp_do_payload_tlv`** routes to **`demarshall_2sp_file`**, **`demarshall_2sp_script`**, or **`demarshall_2sp_dpi_sig`** (streaming **copy** for FILE bodies, **stage** for `0x26`). Prefix-only types influence product logic elsewhere (getter-style APIs in §9.10); this repo does **not** yet demarshal **`0x07` / `0x08` / `0x25` / `0x27`** payloads at the wire level (open item **A3**). For **one-word** install tokens plus **`install_comment`** text, see **`lib2spy/pkgstream_runtime`** (`INSTALL_TLV_DEMARSHALL`) and **`opentl/pkgstream_format_lib2sp.md`** — summarized next.
+
+### Install actions (operator view) vs `demarshall_2sp_*` (RE labels)
+
+Prefer **one-word filesystem verbs**; use Ghidra symbols only as parser references. Tooltip-style sentences live in **`install_comment`** in the runtime stubs (same intent as a 010 Editor `<comment=…>`).
+
+| Token | RE anchor (10.5.3.527064 export) |
+|-------|----------------------------------|
+| **copy** | Stream carrier bytes to path: **`lib2sp_do_payload_tlv`** + **`lib2sp_open_file` / `write` / `close`** after **`demarshall_2sp_file`** (`0x01` / `0x03` / `0x2F`). |
+| **clone** | Jump table **`lib2sp_do_copy_file`** — copy file-to-file on the rootfs (not from `.pkgstream` blob). |
+| **link** | Jump table **`lib2sp_do_sym_link`** after **`demarshall_2sp_path`** path records (`0x07`, `0x27`, `0x28`). |
+| **mkdir** | Jump table **`lib2sp_do_mkdir`**. |
+| **dispatch** | **`demarshall_2sp_path`** entry and **`0x04`** indirect `< 0x30` path — routes into the same helper family (see stub `install_comment`). |
+| **move** | **`demarshall_2sp_move`** ladder (`0x08`, `0x29`–`0x2B`). |
+| **stage** | **`demarshall_2sp_script`** (`0x26`) — buffer + **`lib2sp_close_script`** runner (§10 *Script orchestration*). |
+| **unlink** | Narrow **delete**-class effect: **`lib2sp_write_file`** error teardown removes a partial target file — not a standalone “delete TLV” opcode in this table. |
+
+**`libpkg_client` / `libpkg_server` / `libpkg_common`** ( **`pkgd`**, **`httpd`**, **`cwmd`** ) implement **download, FIFO/RPC, and session orchestration** around the same carriers; they are **not** where the TLV-to-**mkdir/symlink/copy/move** jump table lives—that table is in **`lib2sp.so`** (`lib2sp_payload_data` per [`output/ghidra_mcp_lib2sp_10_5_3_527064/README.md`](../output/ghidra_mcp_lib2sp_10_5_3_527064/README.md)).
+
+### FILE and SCRIPT TLV bodies
+
+**FILE (`0x01`, `0x03`, `0x2F`):** the TLV **body** is self-describing: nested **path** and **digest** slices, 32-bit or (when `gate >= 100`) **64-bit** payload offset/size, and optional **POSIX `file_mode`**. The canonical **wire** field matrix is **§9.4**; [`parse_file_tlv_body`](../lib2spy/pkgstream_verify.py) matches Ghidra’s **`demarshall_2sp_file`** with an explicit note that the **C struct has a hole at +0x24 that does not exist on the wire** — extended **`u64`** offsets start at **byte 36** of the TLV body (nine big-endian `u32`s, then `file_offset`, `file_size`, `file_mode`).
+
+**SCRIPT (`0x26`):** same family of **hash_alg / hash_offset / hash_length**, then **`payload_offset`** and **`payload_size`** as big-endian **`u64`s** at wire offsets **+0x24** / **+0x2C** (§9.4, [`parse_script_tlv_body`](../lib2spy/pkgstream_verify.py)). There is **no install path string** inside the SCRIPT TLV; the install image chooses how to **name, store, and invoke** each script body (see **Script orchestration** below).
+
+**Verification:** for each record, the verifier hashes **`body[payload_off:payload_end)`** with the TLV’s `hash_alg` and compares it to the embedded digest. The base address **`payload_off`** is **`pkcs7_end + file_offset`** (FILE) or **`pkcs7_end + payload_offset`** (SCRIPT) in the offline tool — conceptually “payload region base + offset from TLV”.
+
+### Prefix TLV catalog: CONFIG, RUN, and the 010 Editor template
+
+Confusion is easy because **two different naming schemes** collide:
+
+| Source | Name | Wire `type` | Role in this repo |
+|--------|------|-------------|-------------------|
+| [Pkgstream_2WIRE_SP.bt](010editor/Pkgstream_2WIRE_SP.bt) | `TLV_CONFIG` | **`0x07`** | Human label for template / exploration. **Not** one of the §5 `lib2sp_do_payload_tlv` FILE/SCRIPT/DPI arms. Wire semantics for the **×8 `0x07` records** on the ATT install carrier are **still unknown** (§9.10: “likely `pkg_image` / `IMG_PARAM_*` family” — **hypothesis**, not confirmed). |
+| Same template | `TLV_RUN` | **`0x2E`** | First TLV on the sample carrier is **`0x2E`**, length **3**, payload ASCII **`run`** (§3.4). §9.10 maps this to an **install-method tag** matching `TW_PKG_TYPE_RUN`. Again: **not** dispatched as FILE/SCRIPT/DPI in §5. |
+| §5 / Ghidra | FILE / SCRIPT / DPI | `0x01`/`0x03`/`0x2F`, `0x26`, `0x3E8` | **`lib2sp_do_payload_tlv`** handlers that open/write/execute content. |
+
+The 010 template also lists other symbolic types (`TLV_STRING`, `TLV_KEY_VALUE`, …) for **authoring and hex-template display**; only a subset appear on every carrier. Treat the enum as **documentation aid**, not proof that each type has a unique public `lib2sp` entry point.
+
+### Legacy DPI TLV (`0x3E8`)
+
+**`demarshall_2sp_dpi_sig`** implements an **older in-band digest** path. Current 5268 samples use **PKCS#7** instead; the offline report exposes `legacy_dpi_sig_present` if **`0x3E8`** ever appears. See §9 intro and §5 table.
+
+### Compression and verify ordering
+
+**Outer bzip2:** when the file begins with **`BZh`** + a digit **`1`–`9`**, `lib2sp_install_data` decompresses **before** treating the buffer as a `2WIRE_SP` stream (§6.1). **Inner** bzip2 errors show up around **member** handling during FILE/script install.
+
+**Security note:** outer decompression is **pre-authentication** work — a hostile stream can force CPU/memory cost before PKCS#7 or per-TLV digest failure. Operational write-up: [`pkgstream_security.md`](pkgstream_security.md) §5.x (pre-verify decompression) and the **historical** probe list there *(former `opentl/tests/probes/` removed)*.
+
+Trust gates (`lib2sp_check_data`, CMDB **`trust_engcert`**, signer CN pin, ANY-of-N signers) determine whether the parser is allowed to treat the carrier as **trusted** before **`lib2sp_simple_unpack`** walks it — see [`pkgstream_security.md`](pkgstream_security.md) §1–§4 and §9.10 trust-manager table here.
+
+### SquashFS, uImage, embedded blobs, and mount
+
+**Detection (offline, same as Binwalk family hits):** scan for SquashFS little-endian magic **`hsqs`** and read **`bytes_used`** at superblock **+40**; scan for legacy uImage big-endian magic **`0x27051956`** and length **`64 + ih_size`** (§7, [`squashfs_le_span_at`](../lib2spy/native_pkgstream.py), [`uimage_span_at`](../lib2spy/native_pkgstream.py)). Those spans can appear **inside** the FILE/SCRIPT payload region or elsewhere in the carrier.
+
+**What `lib2sp` does *not* do:** it does **not** call `mount(2)` on SquashFS superblocks found by magic. Typical outcomes are:
+
+- **FILE TLV installs a SquashFS blob** to an absolute path (e.g. a partition image or staging file) with mode bits taken from the TLV when present — then **other** userland or init scripts flash/mount it per product flow.
+- **Analysis hosts** carve the same byte ranges (`python -m binwalker pkgstream-slices`, [`tools.md`](tools.md) *Pkgstream slices*) and run **`unsquashfs`** or **dissect.squashfs** on each slice — that is **offline** corpus work, not `lib2sp` behavior.
+
+**Integrity:** SquashFS internal xz/CRC and uImage **`ih_*crc`** are **corruption** checks at extraction/boot time (§9.1 table); they are **orthogonal** to the CMS + per-TLV digest story unless a carrier explicitly ships those bytes as a **FILE** payload covered by a FILE digest.
+
+### CONFIG handling: on-wire vs runtime
+
+**On-wire “CONFIG” (`0x07`):** present as repeated records on the ATT install carrier (§9.10). The repo’s **verifier** treats unknown prefix types as **opaque payloads** inside the signed prefix; it does **not** interpret their inner fields. **Do not** assume `0x07` is a key/value text CONFIG without per-field RE.
+
+**Runtime:** `pkgd` + `lib2sp` + CMDB/`libpki` enforce **whether** to unpack (§2.2, §9.10). How **`0x07`** influences image selection, PCA checks, or partition tables is **not** documented at wire level here — **A3** remains open.
+
+**`0x2E` “run”:** ASCII **`run`** payload on the reference carrier — install **method tag**, not a shell script body.
+
+### Script orchestration
+
+§9.10 establishes the key fact: **SCRIPT TLV bodies are POSIX `/bin/sh` scripts** (`#!/bin/sh`), not bytecode. On the **`att-5268-…-install.pkgstream`** carrier the **13** scripts follow a simple product pattern: **`start.sh`** prologue, **`error.sh`** rollback, short **`post_*.sh`**-style hooks after FILE writes, and **`finish.sh`** epilogue (table in §9.10).
+
+```mermaid
+flowchart TD
+  subgraph verify [Trust_and_integrity]
+    CMS[PKCS7_messageDigest_and_RSA]
+    TLVd[Per_FILE_and_SCRIPT_digests]
+  end
+  subgraph hooks [Observed_shell_hooks_ATT_install]
+    S0[start_sh]
+    SX[post_write_micro_scripts]
+    S12[finish_sh]
+    ERR[error_sh_rollback]
+  end
+  CMS --> TLVd
+  TLVd --> S0
+  S0 --> SX
+  SX --> S12
+  S0 -.failure_path.-> ERR
+```
+
+Exact **exec** syscall chain (`system`, `popen`, temp file + `execve`, …) is **device build–specific** and not duplicated here; auditability is: extract SCRIPT bodies with **`python -m lib2spy … --extract`** and read them as plain text.
+
+### Offline verifier and extract parity
+
+[`python -m lib2spy`](../lib2spy/pkgstream.py) prints the same structural view: header, every prefix TLV, FILE/SCRIPT digest verdicts, PKCS#7 summary, embedded SquashFS/uImage spans, and integrity flags (§9.9).
+
+**`--extract DIR`** ([`extract_payloads`](../lib2spy/pkgstream.py)) mirrors semantics usefully:
+
+- **FILE:** writes **`body[payload_offset:payload_end)`** to **`DIR/<path-from-TLV>`**, best-effort `chmod` from `file_mode` when set — with **unsafe path** skips for traversal tricks.
+- **SCRIPT:** writes each payload to **`DIR/_scripts/script_XX_@<tlv_offset>.bin`** because the wire format has **no path** — numbering is **tool order**, not a field from the carrier.
+
+**Device-side hazard (symlinks):** production **`lib2sp`** file opens are described in [`pkgstream_security.md`](pkgstream_security.md) as following absolute paths **without** `O_NOFOLLOW` — see diagram §1 and §5.3 / mitigation table. The offline extractor uses a **safe relative** path policy instead; parity is **not** identical for security.
+
+---
+
+## 11. References
 
 - [firmware.md](firmware.md) — carrier index and sample paths  
-- [opentl/native_pkgstream.py](opentl/native_pkgstream.py) — **`analyze_pkgstream()`**, **`scan_embedded_images()`**  
+- [lib2spy/native_pkgstream.py](lib2spy/native_pkgstream.py) — **`analyze_pkgstream()`**, **`scan_embedded_images()`**  
 - Binwalk v3 JSON (`*.pkgstream.json`) — offset oracle for regression tests  
 
 ---
