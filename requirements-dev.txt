@@ -1,0 +1,5 @@
+# Dev / test deps (install after requirements.txt):
+#   pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+pytest>=7.0
+pytest-timeout>=2.1

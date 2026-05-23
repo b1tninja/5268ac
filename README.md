@@ -1,10 +1,56 @@
-# PACE 5268AC (Pacer) — gateway firmware notes
+# PACE 5268AC — offline firmware research workspace
 
-This repository collects research and tooling related to **AT&T-branded Pace / Arcadyan gateways** centered on the **5268AC** family: hardware identifiers (e.g. flash dumps labeled **PACE 5268AC**), **Linux-derived firmware**, and NAND layout as inferred from strings, dumps, and analysis scripts.
+Research and Python tooling for **AT&T-branded Pace / Arris 5268AC** DSL gateways: **128 MiB NAND** dumps, **OpenTL** translation on **`tlpart`**, carrier **`.pkgstream`** install bundles, and Ghidra-backed notes on **Linux 3.4.x**, **U-Boot**, **lib2sp**, and operator-facing config (**CMDB**, EAPOL, HTTP).
 
-**Correlation strategy (carrier bundle vs flash snapshot):** a downloaded **`.pkgstream`** is treated as a **content corpus**—not assumed to match a TSOP **`tlpart`** dump byte-for-byte. Binwalk metadata often shows **different SquashFS / `uImage` generations** (sizes, dates) between install bundles and NAND; the workflow is **partial overlap**: carve slices from **`pkgstream`**, **`unsquashfs`**, then search **`tlpart.bin`** for shared file fragments as **anchors** and interpret hit clusters (alignment, duplicate offsets). See **[reference/issue.md](reference/issue.md)** (hypothesis: recovery vs installed skew) and **[reference/tools.md](reference/tools.md)** (`pkgstream-slices`, `tl-crc-index` / `tl-crc-scan`, **`python -m corpus`** / **`tools/squashfs_corpus_grep.py`**).
+The repo is built around **repeatable offline analysis**—not a single flash-layout hypothesis. You can go from a TSOP capture or a downloaded install carrier to **partition maps**, **assembled `opentla4` ext2**, **verified pkgstream payloads**, and cross-referenced documentation under **[`reference/`](reference/)**.
 
-**Generated artifacts** default under **`output/`** at the repo root (override with env **`OUTPUT_DIR`**). See **`opentl.paths`**.
+---
+
+## Hardware (5268AC)
+
+| Item | Detail |
+|------|--------|
+| **Platform** | Broadcom **BCM63168** (400 MHz, 2 cores) + Quantenna **QT3840** 802.11ac |
+| **NAND** | **128 MiB** (primary flash — what this repo models) |
+| **RAM** | 256 MiB + 128 MiB (Wi‑Fi side) per board listings |
+| **Boot** | **U-Boot** → MIPS Linux; Pace **OpenTL** on **`tlpart`** |
+| **Default LAN** | **192.168.1.254** |
+
+**Wiki references**
+
+- **[Pace 5268AC — DeviWiki](https://deviwiki.com/wiki/Pace_5268AC)** (ex WikiDevi mirror: FCC **PGR5200AC**, Foxconn ODM, boot log, specs)
+- [Pace 5268AC — WikiDevi (wi-cat.ru mirror)](https://wikidevi.wi-cat.ru/Pace_5268AC)
+
+Stock images on those pages are often **older** (e.g. Linux **2.6.30** in the archived serial log). This workspace’s primary traced build is **11.5.1.532678** (Lightspeed / ATT install path) — see **[`reference/firmware.md`](reference/firmware.md)** and capture **`fwupgrade.txt`**.
+
+---
+
+## What you can do here
+
+```text
+  Carrier .pkgstream          TSOP NAND dump (PACE 5268AC … BIN)
+         │                              │
+         ▼                              ▼
+    lib2spy                      unand → opentl → boardfs
+  parse / verify / extract              │
+         │                              ▼
+         └──────── corpus grep ──►  paceflash ls | cat | shell
+                                   (opentla4 ext2, paramtool, …)
+```
+
+| Goal | Start here |
+|------|------------|
+| **Explore a flash dump** (directories, CMDB, `sys1/uImage`) | [`paceflash/README.md`](paceflash/README.md) — `python -m paceflash --flash "…BIN" ls` |
+| **Understand OpenTL / BBM / `opentla*`** | [`opentl/README.md`](opentl/README.md), [`reference/opentl.md`](reference/opentl.md) |
+| **Parse or verify an install `.pkgstream`** | [`lib2spy/README.md`](lib2spy/README.md) — `python -m lib2spy install.pkgstream` |
+| **Carve partitions / run binwalk workflows** | [`binwalker/README.md`](binwalker/README.md), [`reference/tools.md`](reference/tools.md) |
+| **Serial console hardware** | [`MEC1-108-02/README.md`](MEC1-108-02/README.md) — Samtec **MEC1-108-02** front-panel breakout |
+
+**Generated artifacts** default to **`output/`** (override with env **`OUTPUT_DIR`** before importing **`opentl.paths`**).
+
+**Carrier vs NAND:** a **`.pkgstream`** is a **content corpus** for correlation (SquashFS / `uImage` anchors, string grep)—not assumed byte-identical to a live **`tlpart`** snapshot. See **[`reference/firmware.md`](reference/firmware.md)** and **[`reference/pkgstream_corpus_report.md`](reference/pkgstream_corpus_report.md)**.
+
+---
 
 ## Install
 
@@ -14,54 +60,81 @@ From the repo root:
 pip install -e ".[dissect,shell,eapol,dev]"
 ```
 
-See **[pyproject.toml](pyproject.toml)** for optional extras (`dissect` for ext2/squashfs, `shell` for `paceflash shell` on Windows, `eapol` for PKCS#12 tooling).
+| Extra | Use |
+|-------|-----|
+| **`dissect`** | ext2 + SquashFS via Dissect (AGPL) |
+| **`shell`** | `paceflash shell` tab completion on Windows |
+| **`eapol`** | `paceflash dump-eapol-cert` |
+| **`dev`** | pytest |
 
-## Subprojects
+Details: **[`pyproject.toml`](pyproject.toml)**, **[`requirements.txt`](requirements.txt)**.
 
-Offline stack (bottom → top): **[reference/layers_unand_uboot_opentl_boardfs_paceflash.md](reference/layers_unand_uboot_opentl_boardfs_paceflash.md)** — mermaid map of how packages connect.
+---
 
-| Package | Source | Documentation |
-|---------|--------|----------------|
-| **`unand`** | [`unand/`](unand/) | **[unand/README.md](unand/README.md)** — NAND dump layout, **128 MiB** logical data plane, **`mtdparts=`** on main bytes only |
-| **`uboot`** | [`uboot/`](uboot/) | **[reference/boot_and_storage.md](reference/boot_and_storage.md)** — boot chain; **[reference/boot_environment_trust_eng.md](reference/boot_environment_trust_eng.md)** — env / `bootcmd` / paramtool |
-| **`opentl`** | [`opentl/`](opentl/) | **[reference/opentl.md](reference/opentl.md)** — OpenTL / `opentla*` / U-Boot paths; **[opentl/driver/README.md](opentl/driver/README.md)** — driver-facing helpers |
-| **`boardfs`** | [`boardfs/`](boardfs/) | **[reference/boardfs.md](reference/boardfs.md)** — `FsRegistry`, BBM attach, ext2 assembly |
-| **`paceflash`** | [`paceflash/`](paceflash/) | **[reference/paceflash.md](reference/paceflash.md)** — CLI: `python -m paceflash` (`ls`, `cat`, `shell`, `paramtool`, …) |
-| **`lib2spy`** | [`lib2spy/`](lib2spy/) | **[reference/pkgstream.md](reference/pkgstream.md)** — `.pkgstream` / LIB2SP layout; **[reference/pkgstream_security.md](reference/pkgstream_security.md)** — verify / trust |
-| **`reference/`** | [`reference/`](reference/) | **[reference/README.md](reference/README.md)** — full RE index (Ghidra MCP, security, CMDB, HTTP, …) |
+## Python packages
 
-### Other Python packages
+Stack overview (diagram + Ghidra hints): **[`reference/layers_unand_uboot_opentl_boardfs_paceflash.md`](reference/layers_unand_uboot_opentl_boardfs_paceflash.md)**.
 
-| Package | Source | Documentation |
-|---------|--------|----------------|
-| **`binwalker`** | [`binwalker/`](binwalker/) | **[binwalker/README.md](binwalker/README.md)**; command catalog in **[reference/tools.md](reference/tools.md)** |
-| **`corpus`** | [`corpus/`](corpus/) | SquashFS SQLite index — **`python -m corpus`**; see **[reference/tools.md](reference/tools.md)** |
-| **`hexdumpy`** | [`hexdumpy/`](hexdumpy/) | Page-oriented hexdump helpers (used by other tools) |
-| **`acspy`** | [`acspy/`](acspy/) | **[reference/acspy.md](reference/acspy.md)** — CWMP / ACS client experiments |
+| Package | README | Role |
+|---------|--------|------|
+| **`unand`** | [unand/README.md](unand/README.md) | NAND dump → **128 MiB** logical data plane + spare |
+| **`uboot`** | [reference/boot_and_storage.md](reference/boot_and_storage.md) | **`bootargs`** / **`bootcmd`** / **`mtdparts=`** offline |
+| **`opentl`** | [opentl/README.md](opentl/README.md) | OpenTL BBM, NTL, **`tl-mount`**, `opentla4` extract |
+| **`boardfs`** | [boardfs/README.md](boardfs/README.md) | **`FsRegistry`**, MTD slices, ext2 assembly |
+| **`paceflash`** | [paceflash/README.md](paceflash/README.md) | Operator CLI: **`ls`**, **`cat`**, **`shell`**, **`paramtool`**, … |
+| **`lib2spy`** | [lib2spy/README.md](lib2spy/README.md) | **`.pkgstream`** parse, PKCS#7 verify, extract |
+| **`binwalker`** | [binwalker/README.md](binwalker/README.md) | Carve, **`partition-map`**, pkgstream slices |
+| **`corpus`** | [reference/tools.md](reference/tools.md) | SquashFS SQLite index — **`python -m corpus`** |
+| **`acspy`** | [reference/acspy.md](reference/acspy.md) | CWMP / ACS experiments |
+| **`hexdumpy`** | — | Shared hexdump helpers |
 
-### Hardware
+Full RE index: **[`reference/README.md`](reference/README.md)**.
 
-| Item | Path |
-|------|------|
-| **MEC1-108-02** front-panel debug breakout | **[MEC1-108-02/README.md](MEC1-108-02/README.md)** — Samtec socket PCB, gerbers, console cable photos |
+---
 
-## Reference docs (starting points)
+## Documentation map
 
-Curated entry points under **[reference/](reference/)** (full list: **[reference/README.md](reference/README.md)**):
+| Topic | Document |
+|-------|----------|
+| Boot chain, MTD, storage | [reference/boot_and_storage.md](reference/boot_and_storage.md) |
+| Boot env, UART, **`gw:trust_engcert`** | [reference/boot_environment_trust_eng.md](reference/boot_environment_trust_eng.md) |
+| Carrier CDN, **532678** bundle | [reference/firmware.md](reference/firmware.md) |
+| Command cheat sheet | [reference/tools.md](reference/tools.md) |
+| **`.pkgstream`** byte layout | [reference/pkgstream.md](reference/pkgstream.md) |
+| Security (pkg, CMDB, EAPOL) | [reference/security.md](reference/security.md) |
+| Kernel ↔ Python `#region` EAs | [reference/kernel_python_regions.md](reference/kernel_python_regions.md) |
 
-| Document | Contents |
-|----------|----------|
-| **[reference/issue.md](reference/issue.md)** | **OpenTL** and **`tlpart`**: anchor-based mapping, pkgstream as corpus, recovery vs installed skew |
-| **[reference/hardware.md](reference/hardware.md)** | Platform, **MTD**, **BCMNAND** geometry |
-| **[reference/firmware.md](reference/firmware.md)** | Carrier bundles, **Linux 3.4.11-rt19**, **`fwupgrade.txt`** boot trace |
-| **[reference/tools.md](reference/tools.md)** | **`binwalker`**, **`nand-translate`**, **`partition-map`**, OpenTL **`tl-*`**, corpus grep |
-| **[reference/boot_and_storage.md](reference/boot_and_storage.md)** | ROM → U-Boot → Linux; storage stack diagrams |
-| **[reference/kernel_python_regions.md](reference/kernel_python_regions.md)** | `#region kernel: 0x…` markers vs Ghidra exports |
+---
 
-Security / operator surface (also in the index): **[reference/security.md](reference/security.md)**, **[reference/console_uart_disable.md](reference/console_uart_disable.md)**, **[reference/eapol_8021x_p12.md](reference/eapol_8021x_p12.md)**.
+## Typical commands
 
-## External links
+```bash
+# Flash dump → ext2 listing
+python -m paceflash --flash "PACE 5268AC S34ML01G1@TSOP48.BIN" ls sys1
 
-- [Pace 5268AC — WikiDevi (wi-cat.ru mirror)](https://wikidevi.wi-cat.ru/Pace_5268AC)
+# Full flash inventory (MTD, BBM, disklabel)
+python -m paceflash --flash "PACE …BIN" ls --debug
 
-**Where to start:** **[reference/issue.md](reference/issue.md)** for OpenTL / **`tlpart`** motivation, **[reference/tools.md](reference/tools.md)** for commands, or **[reference/layers_unand_uboot_opentl_boardfs_paceflash.md](reference/layers_unand_uboot_opentl_boardfs_paceflash.md)** for the Python package stack.
+# Install carrier
+python -m lib2spy firmware_11.5.1.532678/5268.install.pkgstream --extract output/_pkg_extract
+
+# OpenTL BBM summary
+python -m boardfs virt-map "PACE …BIN" --json
+```
+
+Use **`-o`** for binary output on Windows; avoid redirecting **`cat`** with PowerShell **`>`** on CMDB/XML (see [paceflash/README.md](paceflash/README.md)).
+
+---
+
+## Ethics and scope
+
+Work here is intended for **devices you own** or **explicitly authorized** lab use. Extracted CMDB, PKCS#12, and HTTP credentials are **sensitive**—see **[`reference/cmdb_security.md`](reference/cmdb_security.md)** before publishing logs or JSON. Tooling legal notes: **[`reference/tools.md`](reference/tools.md)**.
+
+---
+
+## Where to start
+
+1. **Have a `.BIN` dump?** → **[paceflash/README.md](paceflash/README.md)**  
+2. **Have a `.pkgstream`?** → **[lib2spy/README.md](lib2spy/README.md)**  
+3. **Need the storage model?** → **[reference/opentl.md](reference/opentl.md)** + **[reference/layers_unand_uboot_opentl_boardfs_paceflash.md](reference/layers_unand_uboot_opentl_boardfs_paceflash.md)**  
+4. **Grep everything** → **[reference/README.md](reference/README.md)**

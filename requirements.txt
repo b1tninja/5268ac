@@ -1,0 +1,9 @@
+# Python deps for 5268ac tooling (venv: python -m venv .venv && .venv\\Scripts\\pip install -r requirements.txt)
+# ``unand`` (repo root) is stdlib-only — import after ``cd`` to repo or set PYTHONPATH.
+# dissect.squashfs is AGPL-3.0 — https://pypi.org/project/dissect.squashfs/
+#
+# Optional (pkgstream --build-index uImage → ELF corpus): marin-m/vmlinux-to-elf — see tools.md
+#   pip install -e D:\github\marin-m\vmlinux-to-elf
+
+pyelftools>=0.29
+dissect.squashfs>=1.12; python_version>='3.10'

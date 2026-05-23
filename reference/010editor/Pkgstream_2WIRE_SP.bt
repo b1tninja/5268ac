@@ -1,0 +1,621 @@
+// =============================================================================
+// ATT / 2Wire .pkgstream carrier — 2WIRE_SP header + linear big-endian TLV prefix
+// =============================================================================
+//
+// Matches lib2spy/native_pkgstream.py: HEADER_FORMAT ">8sIIII", TLV_HEADER ">II",
+// iter_tlvs_prefix_only starting at offset 24. Symbolic TLV names align with
+// lib2spy/pkgstream.py _TLV_NAMES.
+//
+// LIMITATIONS
+//   - File must start with 2WIRE_SP at offset 0. If the carrier is outer-bzip2
+//     (BZh...), decompress first (same as python try_decompress_bzip2_prefix).
+//   - Only the contiguous TLV prefix is walked; parsing stops when length would
+//     pass EOF (same guard as iter_tlvs_prefix_only). PKCS#7 / trailing layout
+//     is not modeled here — use: python -m lib2spy <file>
+//
+// REFERENCES
+//   lib2spy/native_pkgstream.py          parse_2sp_header, iter_tlvs, TLV types
+//   lib2spy/pkgstream.py                 _TLV_NAMES / _tlv_name, verify / extract
+//   opentl/pkgstream_format_lib2sp.md   lib2sp_do_payload_tlv vs lib2sp_payload_data
+//   output/ghidra_mcp_lib2sp_10_5_3_527064/README.md   Ghidra dispatch table
+//   lib2spy/pkgstream_runtime/           on-device handler stubs (no emulation)
+//   lib2spy/pkgstream_runtime/lib2sp_dispatch.py   install_runtime_hint_dict (keep PkgstreamInstallRuntimeHint in sync)
+//   pkgstream.md                        full integrity model + §10 runtime
+//
+// Per-field narrative: // comments. TLV type uses enum + comment; struct read= summary per record.
+// =============================================================================
+
+BigEndian();
+
+#define PKGSTREAM_HEADER_SIZE        24
+#define PKGSTREAM_MAX_TLV_PAYLOAD    (256 * 1024 * 1024)
+
+// SquashFS 4.x little-endian superblock constants.
+#define SQUASHFS_MAGIC_LE            0x73717368
+
+// U-Boot image magic (BE).
+#define UIMAGE_MAGIC_BE              0x27051956
+
+// 2WIRE_SP as eight bytes (ASCII).
+int PkgstreamMagicOkAt( int64 off ) {
+    if( ReadUByte( off + 0 ) != 0x32 )
+        return 0;
+    if( ReadUByte( off + 1 ) != 0x57 )
+        return 0;
+    if( ReadUByte( off + 2 ) != 0x49 )
+        return 0;
+    if( ReadUByte( off + 3 ) != 0x52 )
+        return 0;
+    if( ReadUByte( off + 4 ) != 0x45 )
+        return 0;
+    if( ReadUByte( off + 5 ) != 0x5F )
+        return 0;
+    if( ReadUByte( off + 6 ) != 0x53 )
+        return 0;
+    if( ReadUByte( off + 7 ) != 0x50 )
+        return 0;
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// TLV type codes (big-endian on disk; enum <uint> matches wire values).
+// ---------------------------------------------------------------------------
+typedef enum <uint> {
+    TLV_PREFIX_END  = 0x00,
+    TLV_FILE_1      = 0x01,
+    TLV_STRING_LIST = 0x02,
+    TLV_FILE_3      = 0x03,
+    TLV_PATH        = 0x04,
+    TLV_CHECKSUM    = 0x05,
+    TLV_TIMESTAMP   = 0x06,
+    // Prefix: CONFIG-shaped records. lib2sp_payload_data (install): demarshall_2sp_path.
+    TLV_CONFIG      = 0x07,
+    // Prefix: INTEGER. lib2sp_payload_data (install): demarshall_2sp_move for opcode 0x08.
+    TLV_INTEGER     = 0x08,
+    TLV_STRING      = 0x09,
+    // Often ASCII version text on wire; see pkgstream.md §9.10.
+    TLV_SIGNATURE   = 0x0A,
+    TLV_KEY_VALUE   = 0x0B,
+    TLV_BOOLEAN     = 0x0C,
+    TLV_BYTE_ARRAY  = 0x0D,
+    TLV_METADATA    = 0x1A,
+    TLV_WIRE_1B     = 0x1B,
+    TLV_WIRE_20     = 0x20,
+    TLV_WIRE_25     = 0x25,
+    TLV_SCRIPT      = 0x26,
+    // lib2sp_payload_data: demarshall_2sp_path
+    TLV_PATH_27     = 0x27,
+    TLV_PATH_28     = 0x28,
+    // lib2sp_payload_data: demarshall_2sp_move
+    TLV_MOVE_29     = 0x29,
+    TLV_MOVE_2A     = 0x2A,
+    TLV_MOVE_2B     = 0x2B,
+    TLV_RUN         = 0x2E,
+    TLV_PATH_FILE   = 0x2F,
+    TLV_DPI_SIG     = 0x3E8
+} PKGSTREAM_TLV_TYPE;
+
+string PkgstreamTlvTypeName( int t ) {
+    if( t == 0x00 )
+        return "PREFIX_END";
+    if( t == 0x01 || t == 0x03 )
+        return "FILE";
+    if( t == 0x26 )
+        return "SCRIPT";
+    if( t == 0x2F )
+        return "PATH_FILE";
+    if( t == 0x3E8 )
+        return "DPI_SIG";
+    if( t == 0x2E )
+        return "RUN";
+    if( t == 0x04 )
+        return "PATH";
+    if( t == 0x1A )
+        return "METADATA";
+    if( t == 0x1B )
+        return "WIRE_1B";
+    if( t == 0x20 )
+        return "WIRE_20";
+    if( t == 0x25 )
+        return "WIRE_25";
+    if( t == 0x27 )
+        return "PATH_27";
+    if( t == 0x28 )
+        return "PATH_28";
+    if( t == 0x29 )
+        return "MOVE_29";
+    if( t == 0x2A )
+        return "MOVE_2A";
+    if( t == 0x2B )
+        return "MOVE_2B";
+    if( t == 0x0A )
+        return "SIGNATURE";
+    if( t == 0x07 )
+        return "CONFIG";
+    if( t == 0x0B )
+        return "KEY_VALUE";
+    if( t == 0x0C )
+        return "BOOLEAN";
+    if( t == 0x08 )
+        return "INTEGER";
+    if( t == 0x09 )
+        return "STRING";
+    if( t == 0x05 )
+        return "CHECKSUM";
+    if( t == 0x06 )
+        return "TIMESTAMP";
+    if( t == 0x02 )
+        return "STRING_LIST";
+    if( t == 0x0D )
+        return "BYTE_ARRAY";
+    string s;
+    SPrintf( s, "type_0x%X", t & 0xFFFFFFFF );
+    return s;
+}
+
+// lib2sp_payload_data install-phase hint (effect_class:symbol) — mirror lib2spy.pkgstream_runtime.lib2sp_dispatch.
+string PkgstreamInstallRuntimeHint( int t ) {
+    if( t == 0x01 || t == 0x03 || t == 0x2F )
+        return "stream_to_path:demarshall_2sp_file";
+    if( t == 0x07 || t == 0x27 || t == 0x28 )
+        return "fs_op:demarshall_2sp_path";
+    if( t == 0x08 || t == 0x29 || t == 0x2A || t == 0x2B )
+        return "fs_op:demarshall_2sp_move";
+    if( t == 0x26 )
+        return "stage_buffer:demarshall_2sp_script";
+    return "";
+}
+
+// ---------------------------------------------------------------------------
+// SquashFS 4.x superblock — 112 bytes
+// ---------------------------------------------------------------------------
+typedef struct {
+    uint magic <format=hex,comment="SquashFS magic (LE 0x73717368)">;
+    uint bytes_used <format=hex,comment="Bytes used">;
+    ushort inode_count;
+    ushort major;
+    ushort minor;
+    ushort return_inode;
+    ushort return_xattr_inode;
+    ulong creation_time <format=hex,comment="Creation time">;
+    uint block_size <format=hex,comment="Block size">;
+    uint fragment_count <format=hex,comment="Fragment count">;
+    uint fragment_table_start <format=hex,comment="Fragment table start">;
+    uint dirs_count <format=hex,comment="Dir count">;
+    uint lookup_table_start <format=hex,comment="Lookup table start">;
+    uint inode_table_start <format=hex,comment="Inode table start">;
+    uint dir_table_start <format=hex,comment="Dir table start">;
+    uint xattr_table_start <format=hex,comment="Xattr table start">;
+    uint fragment_table_start_2 <format=hex>;
+    uint overflow_table_start <format=hex>;
+    uint inode_table_start_2 <format=hex>;
+    uint dir_table_start_2 <format=hex>;
+    uint root_dir_inode_no <format=hex,comment="Root directory inode">;
+    ushort name_table_offset <format=hex,comment="Name table offset">;
+    ushort nlinks <format=hex,comment="Number of links">;
+    ushort fs_usage <format=hex,comment="FS usage">;
+    ulong flags <format=hex,comment="Flags">;
+    ushort immutable_size <format=hex>;
+    ushort pad2;
+    ubyte pad[8];
+} SQUASHFS_SUPERBLOCK;
+// Not instantiated while template is BigEndian() — SquashFS fields are LE; hints use ReadUInt32LE.
+
+// ---------------------------------------------------------------------------
+// U-Boot uImage header — 64 bytes
+// ---------------------------------------------------------------------------
+typedef struct {
+    uint magic <format=hex,comment="uImage magic 0x27051956">;
+    ulong crc <format=hex,comment="Header CRC">;
+    ulong time <format=hex,comment="Creation time">;
+    ulong size <format=hex,comment="Payload size">;
+    ulong load <format=hex,comment="Load address">;
+    ulong entry <format=hex,comment="Entry point">;
+    ubyte dcrc[4] <format=hex,comment="Data CRC">;
+    char name[32];
+    ubyte os <format=hex,comment="OS type">;
+    ubyte arch <format=hex,comment="CPU architecture">;
+    ubyte type <format=hex,comment="Image type">;
+    ubyte comp <format=hex,comment="Compression type">;
+} UIMAGE_HDR;
+
+// FILE TLV metadata body.
+typedef struct {
+    uint flags;
+    uint path_offset;
+    uint path_length;
+    uint hash_alg;       // 1=SHA-1, 2=MD5, 3=SHA-256
+    uint hash_offset;
+    uint hash_length;
+    uint file_offset_short;
+    uint file_size_short;
+    uint gate;           // >= 100 => extended offsets authoritative
+    if( gate >= 100 ) {
+        ulong file_offset_ext;
+        ulong file_size_ext;
+    } else {
+        ulong file_offset_ext <optimize=true>;
+        ulong file_size_ext <optimize=true>;
+    }
+    // path string (dynamic length)
+    if( path_length > 0 && path_offset + path_length <= sizeof(this) ) {
+        char file_path[path_length];
+    }
+    // hash digest (dynamic length)
+    if( hash_length > 0 && hash_offset + hash_length <= sizeof(this) ) {
+        ubyte hash_digest[hash_length];
+    }
+} FILE_META;
+
+// SCRIPT TLV metadata body.
+typedef struct {
+    ubyte pad0[24];
+    uint hash_alg;
+    uint hash_offset;
+    uint hash_length;
+    ulong payload_offset;
+    ulong payload_size;
+    ubyte digest[20];
+} SCRIPT_META;
+
+// ---------------------------------------------------------------------------
+// Subtype detection helpers
+// ---------------------------------------------------------------------------
+int IsSquashfsPayload( int64 payloadStart, int payloadLen ) {
+    if( payloadLen < 64 ) return 0;
+    return ReadUInt( payloadStart ) == SQUASHFS_MAGIC_LE;
+}
+
+int IsUImagePayload( int64 payloadStart, int payloadLen ) {
+    if( payloadLen < 64 ) return 0;
+    return ReadUInt( payloadStart ) == UIMAGE_MAGIC_BE;
+}
+
+int IsCertPayload( int64 payloadStart, int payloadLen ) {
+    if( payloadLen < 2 ) return 0;
+    int b0 = ReadUByte( payloadStart ) & 0xFF;
+    int b1 = ReadUByte( payloadStart + 1 ) & 0xFF;
+    if( b0 == 0x30 && b1 == 0x82 ) return 1;
+    if( b0 == 0x2D && b1 == 0x2D && payloadLen >= 17 && ReadUByte( payloadStart + 14 ) == 0x43 ) return 1;
+    return 0;
+}
+
+int IsScriptPayload( int64 payloadStart, int payloadLen ) {
+    if( payloadLen < 4 ) return 0;
+    return ReadUByte( payloadStart ) == 0x23 && ReadUByte( payloadStart + 1 ) == 0x21;
+}
+
+// ---------------------------------------------------------------------------
+// PKGSTREAM_FILE_HEADER
+// ---------------------------------------------------------------------------
+typedef struct {
+    char magic8[8];
+    uint be_u32_0 <format=hex>;
+    uint be_u32_1 <format=hex>;
+    uint be_u32_2 <format=hex>;
+    uint be_u32_3 <format=hex>;
+} PKGSTREAM_FILE_HEADER <read=PkgstreamHeaderRead>;
+
+string PkgstreamHeaderRead( PKGSTREAM_FILE_HEADER &h ) {
+    string s;
+    int ok;
+    ok = PkgstreamMagicOkAt( startof(h) );
+    SPrintf( s,
+        "2WIRE_SP_ok=%d u32: %08X %08X %08X %08X | structural only; CMS/RSA/per-TLV digests: python -m lib2spy (pkgstream.md sec 9)",
+        ok, h.be_u32_0 & 0xFFFFFFFF, h.be_u32_1 & 0xFFFFFFFF,
+        h.be_u32_2 & 0xFFFFFFFF, h.be_u32_3 & 0xFFFFFFFF );
+    return s;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for PKGSTREAM_TLV read= (LE peek inside BE template mode).
+// ---------------------------------------------------------------------------
+uint ReadUInt32LE( int64 pos ) {
+    return  (uint)ReadUByte( pos )
+          | ( (uint)ReadUByte( pos + 1 ) << 8 )
+          | ( (uint)ReadUByte( pos + 2 ) << 16 )
+          | ( (uint)ReadUByte( pos + 3 ) << 24 );
+}
+
+string PkgstreamHashAlgName( int alg ) {
+    if( alg == 1 )
+        return "SHA1";
+    if( alg == 2 )
+        return "MD5";
+    if( alg == 3 )
+        return "SHA256";
+    string s;
+    SPrintf( s, "alg_%d", alg );
+    return s;
+}
+
+// ---------------------------------------------------------------------------
+// PKGSTREAM_TLV — with nested struct instances for payload decoding.
+//
+// Nested struct members are declared conditionally so 010 shows them as
+// expandable tree nodes in the left panel.
+// ---------------------------------------------------------------------------
+typedef struct {
+    PKGSTREAM_TLV_TYPE type_be <format=hex,comment=(PkgstreamTlvTypeName(this))>;
+    uint length_be;
+
+    // --- Payload: raw bytes for all types ---
+    if( length_be > 0 ) {
+        ubyte payload[length_be] <format=hex,comment="Raw payload bytes">;
+    }
+
+    // --- Nested FILE metadata struct (FILE/PATH_FILE) ---
+    if( (type_be == 0x01 || type_be == 0x03 || type_be == 0x2F) && length_be >= 36 ) {
+        FILE_META file_meta;
+    }
+
+    // --- Nested SCRIPT metadata struct (SCRIPT) ---
+    if( type_be == 0x26 && length_be >= 24 ) {
+        SCRIPT_META script_meta;
+    }
+} PKGSTREAM_TLV <read=PkgstreamTlvHintRead>;
+
+string PkgstreamTlvHintRead( PKGSTREAM_TLV &t ) {
+    string s, nm, extra, ph, hx, hx_digest, py, hx2, han, digest_hex;
+    int64 off, ps;
+    int tn, len, i, b, path_off, path_len, hash_alg, hash_alg2, gate;
+    uint file_off_short, file_sz_short;
+    ulong file_off_ext, file_sz_ext;
+    uint hash_off, hash_len, digest_len;
+
+    tn = t.type_be & 0xFFFFFFFF;
+    len = t.length_be & 0xFFFFFFFF;
+    nm = PkgstreamTlvTypeName( tn );
+    off = startof( t );
+    ps = off + 8;
+    extra = "";
+
+    // Detect payload subtype for display name (overrides type name).
+    if( (tn == 0x01 || tn == 0x03) && len >= 64 ) {
+        if( IsSquashfsPayload( ps, len ) )
+            nm = "SquashFS";
+        else if( IsUImagePayload( ps, len ) )
+            nm = "uImage";
+        else if( IsCertPayload( ps, len ) )
+            nm = "Certificate";
+    } else if( tn == 0x26 && len >= 8 ) {
+        if( IsScriptPayload( ps, len ) )
+            nm = "Shell Script";
+        else if( IsCertPayload( ps, len ) )
+            nm = "Certificate";
+    }
+
+    // --- FILE / PATH_FILE TLV ---
+    if( (tn == 0x01 || tn == 0x03 || tn == 0x2F) && len >= 36 ) {
+        path_off = ReadUInt( ps + 4 ) & 0xFFFFFFFF;
+        path_len = ReadUInt( ps + 8 ) & 0xFFFFFFFF;
+        hash_alg = ReadUInt( ps + 12 ) & 0xFFFFFFFF;
+        hash_off = ReadUInt( ps + 16 ) & 0xFFFFFFFF;
+        hash_len = ReadUInt( ps + 20 ) & 0xFFFFFFFF;
+        file_off_short = ReadUInt( ps + 24 ) & 0xFFFFFFFF;
+        file_sz_short = ReadUInt( ps + 28 ) & 0xFFFFFFFF;
+        gate = ReadUInt( ps + 32 ) & 0xFFFFFFFF;
+        if( len >= 56 ) {
+            file_off_ext = ReadUInt64( ps + 36 ) & 0xFFFFFFFFFFFFFFFF;
+            file_sz_ext = ReadUInt64( ps + 44 ) & 0xFFFFFFFFFFFFFFFF;
+        }
+
+        han = PkgstreamHashAlgName( hash_alg );
+
+        ulong resolved_off, resolved_sz;
+        if( gate >= 100 && len >= 56 ) {
+            resolved_off = file_off_ext;
+            resolved_sz = file_sz_ext;
+        } else {
+            resolved_off = file_off_short;
+            resolved_sz = file_sz_short;
+        }
+
+        SPrintf( extra, " gate=%u hash_alg=%s file_offset=0x%LX file_size=%Lu",
+                 gate, han, resolved_off & 0xFFFFFFFFFFFFFFFF, resolved_sz & 0xFFFFFFFFFFFFFFFF );
+
+        if( gate >= 100 && len >= 56 ) {
+            SPrintf( hx, " file_off_ext=0x%LX file_size_ext=%Lu",
+                     file_off_ext & 0xFFFFFFFFFFFFFFFF, file_sz_ext & 0xFFFFFFFFFFFFFFFF );
+            extra = extra + hx;
+        }
+
+        // Path.
+        if( path_off + path_len <= len && path_len > 0 && path_len < 512 ) {
+            ph = "";
+            for( i = 0; i < path_len && i < 80; i++ ) {
+                b = ReadUByte( ps + path_off + i ) & 0xFF;
+                if( b >= 32 && b < 127 ) {
+                    SPrintf( hx, "%c", b );
+                    ph = ph + hx;
+                } else {
+                    ph = ph + "?";
+                }
+            }
+            extra = extra + " path=" + ph;
+        }
+
+        // Digest.
+        if( hash_off + hash_len <= len && hash_len > 0 && hash_len <= 64 ) {
+            digest_hex = "";
+            digest_len = hash_len;
+            for( i = 0; i < digest_len && i < 48; i++ ) {
+                b = ReadUByte( ps + hash_off + i ) & 0xFF;
+                SPrintf( hx_digest, "%02X", b );
+                digest_hex = digest_hex + hx_digest;
+            }
+            extra = extra + " " + han + "_digest=" + digest_hex;
+        }
+
+        // SquashFS details in hint.
+        if( IsSquashfsPayload( ps, len ) ) {
+            SPrintf( hx, "\nSquashFS 4.%d bytes_used=%u nlinks=%u root_dir=%u",
+                     ReadUByte( ps + 6 ) & 0xFF,
+                     ReadUInt32LE( ps + 4 ) & 0xFFFFFFFF,
+                     ReadUInt32LE( ps + 8 ) & 0xFFFFFFFF,
+                     ReadUInt32LE( ps + 12 ) & 0xFFFFFFFF );
+            extra = extra + hx;
+        }
+
+        // uImage details in hint.
+        if( IsUImagePayload( ps, len ) ) {
+            string uname;
+            uname = "";
+            for( i = 32; i < 64 && i < 72; i++ ) {
+                b = ReadUByte( ps + i ) & 0xFF;
+                if( b >= 32 && b < 127 )
+                    uname = uname + ((char)b);
+                else
+                    break;
+            }
+            SPrintf( hx, "\nuImage name=\"%s\" size=%u load=0x%08X entry=0x%08X",
+                     uname,
+                     ReadUInt( ps + 8 ) & 0xFFFFFFFF,
+                     ReadUInt( ps + 12 ) & 0xFFFFFFFF,
+                     ReadUInt( ps + 16 ) & 0xFFFFFFFF );
+            extra = extra + hx;
+        }
+
+    } else if( tn == 0x26 && len >= 24 ) {
+        // SCRIPT TLV.
+        hash_alg = ReadUInt( ps + 0x18 ) & 0xFFFFFFFF;
+        hash_off = ReadUInt( ps + 0x1C ) & 0xFFFFFFFF;
+        hash_len = ReadUInt( ps + 0x20 ) & 0xFFFFFFFF;
+        file_sz_ext = ReadUInt64( ps + 0x24 ) & 0xFFFFFFFFFFFFFFFF;
+        file_off_ext = ReadUInt64( ps + 0x32 ) & 0xFFFFFFFFFFFFFFFF;
+        han = PkgstreamHashAlgName( hash_alg );
+
+        SPrintf( extra, " hash_alg=%s payload_off=0x%LX payload_size=%Lu",
+                 han, file_off_ext & 0xFFFFFFFFFFFFFFFF, file_sz_ext & 0xFFFFFFFFFFFFFFFF );
+
+        if( hash_off + hash_len <= len && hash_len > 0 && hash_len <= 32 ) {
+            digest_hex = "";
+            digest_len = hash_len;
+            for( i = 0; i < digest_len && i < 32; i++ ) {
+                b = ReadUByte( ps + hash_off + i ) & 0xFF;
+                SPrintf( hx_digest, "%02X", b );
+                digest_hex = digest_hex + hx_digest;
+            }
+            extra = extra + " " + han + "_digest=" + digest_hex;
+        }
+
+        // Script analysis.
+        if( IsScriptPayload( ps, len ) ) {
+            int lineCount = 0, blankCount = 0, lineStart = -1;
+            string lineTxt;
+            for( i = 0; i < len; i++ ) {
+                b = ReadUByte( ps + i ) & 0xFF;
+                if( b == 0x0A ) {
+                    lineCount++;
+                    if( lineStart >= 0 ) {
+                        lineTxt = "";
+                        for( int j = lineStart; j < i && j < lineStart + 60; j++ ) {
+                            b = ReadUByte( ps + j ) & 0xFF;
+                            if( b >= 32 && b < 127 )
+                                lineTxt = lineTxt + ((char)b);
+                        }
+                        if( lineTxt == "" )
+                            blankCount++;
+                    }
+                    lineStart = i + 1;
+                }
+            }
+            if( lineStart >= 0 && lineStart < len )
+                lineCount++;
+            SPrintf( hx, "\nscript lines=%d blank_lines=%d", lineCount, blankCount );
+            extra = extra + hx;
+        }
+
+    } else if( tn == 0x3E8 ) {
+        extra = " legacy DPI signature";
+    } else if( tn == 0x2E ) {
+        py = "";
+        for( i = 0; i < len && i < 32; i++ ) {
+            b = ReadUByte( ps + i ) & 0xFF;
+            if( b >= 32 && b < 127 ) {
+                SPrintf( hx2, "%c", b );
+                py = py + hx2;
+            }
+        }
+        if( py != "" )
+            SPrintf( extra, " payload=\"%s\"", py );
+    } else if( tn == 0x04 ) {
+        py = "";
+        for( i = 0; i < len && i < 64; i++ ) {
+            b = ReadUByte( ps + i ) & 0xFF;
+            if( b >= 32 && b < 127 ) {
+                SPrintf( hx2, "%c", b );
+                py = py + hx2;
+            }
+        }
+        if( py != "" )
+            SPrintf( extra, " path=\"%s\"", py );
+    }
+
+    {
+        local string rh;
+        rh = PkgstreamInstallRuntimeHint( tn );
+        if( rh != "" )
+            extra = extra + " | install:" + rh;
+    }
+
+    SPrintf( s, "%s len=%u off=0x%LX%s", nm, len, off, extra );
+    return s;
+}
+
+// First payload byte of TLV (TLV prefix is 8 bytes).
+int64 PkgstreamTlvPayloadStart( PKGSTREAM_TLV &t ) {
+    return startof( t ) + 8;
+}
+
+// ---------------------------------------------------------------------------
+// No file-scope assignments — use if/else only.
+// ---------------------------------------------------------------------------
+if( FileSize() < 3 ) {
+    Warning( "pkgstream: file too small." );
+} else if( ReadUByte( 0 ) == 0x42 && ReadUByte( 1 ) == 0x5A && ReadUByte( 2 ) == 0x68 ) {
+    Warning( "pkgstream: file starts with BZh (bzip2). Decompress first; this template expects 2WIRE_SP at offset 0." );
+} else if( FileSize() < PKGSTREAM_HEADER_SIZE ) {
+    Warning( "pkgstream: need at least 24 bytes for 2SP header." );
+} else {
+    PKGSTREAM_FILE_HEADER pkg_hdr;
+    if( PkgstreamMagicOkAt( startof( pkg_hdr ) ) == 0 ) {
+        Warning( "pkgstream: magic is not 2WIRE_SP at offset 0; TLV walk skipped." );
+    } else {
+        local int64 tlv_start;
+        local int peek_type;
+        local int peek_len;
+        while( FTell() + 8 <= FileSize() ) {
+            tlv_start = FTell();
+            peek_type = ReadUInt( tlv_start ) & 0xFFFFFFFF;
+            peek_len = ReadUInt( tlv_start + 4 ) & 0xFFFFFFFF;
+            if( peek_len > PKGSTREAM_MAX_TLV_PAYLOAD ) {
+                Warning( "pkgstream: TLV length exceeds cap; stopping TLV walk." );
+                break;
+            }
+            if( tlv_start + 8 + (int64)peek_len > FileSize() ) {
+                Warning( "pkgstream: TLV would pass EOF (prefix ends here, as in iter_tlvs_prefix_only)." );
+                break;
+            }
+            FSeek( tlv_start );
+            PKGSTREAM_TLV tlv_rec;
+        }
+        // Postfix hint.
+        {
+            local int64 _pos = FTell();
+            local int   _b;
+            local string _t;
+            if( _pos >= FileSize() ) {
+                SPrintf( _t, "at EOF (no postfix bytes)" );
+            } else {
+                _b = ReadUByte( _pos ) & 0xFF;
+                if( _b == 0x30 && ReadUByte( _pos + 1 ) == 0x82 ) {
+                    SPrintf( _t, "DER starts 0x3082 (likely PKCS#7 CMS). Full verify: python -m lib2spy" );
+                } else {
+                    SPrintf( _t, "post-prefix 0x%02X (not 0x3082); tail may still hold PEM/payloads", _b );
+                }
+            }
+            Warning( _t );
+        }
+    }
+}

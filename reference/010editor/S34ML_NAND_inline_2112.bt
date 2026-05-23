@@ -1,0 +1,309 @@
+// =============================================================================
+// S34ML large-page NAND — INLINE dump layout (2048 B main + 64 B spare per page)
+// =============================================================================
+//
+// TARGET FILE LAYOUT
+//   Each physical NAND page is stored contiguously as:
+//     [ 2048 bytes main / MTD data ] [ 64 bytes spare / OOB ]
+//   Stride = 2112 bytes. This matches unand.reader.NandPageReader / NANDReader
+//   (data at idx*2112, spare immediately after each main region).
+//
+// DECODED ROW (Template Results)
+//   spare_decoded — OpenTL xsum lane + SR1_BITS/BBI/FLAGS08/SPARE_TAG; page read=S34MlInlinePageRowRead
+//   for collapsed-row hints (BBI bad, SR1 fault, ERASED-like, xsum BAD, MIRROR, TAGGED). On-Demand <size>.
+//
+// NOT PARSED BY THIS TEMPLATE
+//   - Logical-only dumps: pages_total * 2048 bytes (no interleaved spare).
+//   - Flat-tail dumps: all main bytes then all spare bytes (see NandGeometry
+//     full_flat_tail_bytes in unand/geometry.py).
+//   If your file size is not a multiple of 2112, a Warning is issued; whole
+//   pages still parse up to the remainder.
+//
+// GEOMETRY (Pace / S34ML01G1 class — see unand/s34ml.py, unand/geometry.py)
+//   page_data (main)     2048 bytes
+//   page_spare (OOB)       64 bytes
+//   erase_bytes        131072 bytes (128 KiB per erase block)
+//   pages_per block        64 pages  (erase_bytes / page_data)
+//   Typical S34ML01G1    1024 erase blocks -> 65536 pages -> 128 MiB main
+//
+// AUTHORITATIVE CHIP / REGISTER DOCS
+//   reference/pdfs/S34ML01G1.PDF — Status Register 1/2, factory spare layout.
+//   Cross-check Table / Figure numbering in the PDF when reconciling byte 2.
+//
+// PYTHON SOURCES (repo)
+//   unand/s34ml.py     decode_spare, SR1_* / SR2_* masks, tag / chain notes
+//   unand/README.md    inline vs logical vs flat-tail; OpenTL 512 B sectors
+//
+// OPENTL OVERLAP (same bytes, different names)
+//   spare[9:19] and checksum lane are also documented as OpenTL ntl_prepare_wspare
+//   fields — see reference/spare64_bbm_field_map.md and opentl/spare_layout.py.
+//
+// 010 MANUAL
+//   https://web.archive.org/web/20260129195303/https://www.sweetscape.com/010editor/manual/IntroTemplates.htm
+//
+// Field-by-field spare documentation follows as // comments before each member.
+// <comment> only on spare_decoded (analysis). Page rows: struct read= (on-demand-safe reads).
+// =============================================================================
+
+LittleEndian();
+
+#define NAND_PAGE_MAIN   2048
+#define NAND_PAGE_SPARE    64
+#define NAND_PAGE_STRIDE 2112
+
+// spare[0x08] — same OpenTL flag packing as OpenTL_NAND_inline_2112.bt (Bitfields.htm).
+typedef struct {
+    ubyte param4_pair : 2;
+    ubyte mirror_dup  : 1;
+    ubyte param9_bit  : 1;
+    ubyte unused_hi   : 4;
+} FLAGS08_BITS;
+
+typedef ubyte SPARE_TAG_BYTE <read=Str(
+    this == 0 ? "TAGGED (NUL)" :
+    this == 0x24 ? "TAGGED ($)" :
+    this == 0xFF ? "ERASED" : "non-std (see source .bt)")>;
+
+// spare[0x03] SR1 (datasheet / unand/s34ml.py). :1 members render as checkboxes (Bitfields.htm).
+typedef struct {
+    ubyte prog_status  : 1;  // 0x01
+    ubyte erase_status : 1;  // 0x02
+    ubyte reserved2    : 1;
+    ubyte prog_fail    : 1;  // 0x08
+    ubyte erase_fail   : 1;  // 0x10
+    ubyte ecc_uncor    : 1;  // 0x20
+    ubyte cce          : 1;  // 0x40
+    ubyte prev_status  : 1;  // 0x80
+} SR1_BITS;
+
+typedef ubyte BBI_BYTE <read=BbiByteRead>;
+
+int SpareI8( int b ) {
+    b = b & 0xFF;
+    if( b >= 128 )
+        return b - 256;
+    return b;
+}
+
+// Spansion / Pace S34ML-style 64-byte spare (large page). Offsets relative to
+// spare start (file offset mod 2112 == 2048).
+typedef struct {
+    // spare[0x00]. ECC / EDC syndrome byte 0 (first of three). Host-visible dumps
+    // are often already ECC-corrected; bytes may read 0x00 or reflect controller
+    // state. See S34ML01G1 datasheet (large-page spare / EDC) and unand/s34ml.py
+    // module docstring ECC/OOB list.
+    ubyte spare_ecc0 <format=hex>;
+
+    // spare[0x01]. ECC / EDC syndrome byte 1 (second of three). Same caveats as [0x00].
+    ubyte spare_ecc1 <format=hex>;
+
+    // spare[0x02]. CONFLICT IN SOURCES: unand/s34ml.py decode_spare() treats bytes
+    // [0:3] as ECC syndrome AND uses raw[2] as bad-block / marker (BBI) per
+    // render_spare_table / datasheet Table 9.1 narrative (0x00 bad, 0xFF good in
+    // table text — vs decode_spare comment 0x00 bad / 0x01 good: resolve vs PDF).
+    // Pace/OpenTL images may overload this lane; compare with spare[9..] if programmed.
+    // One tree node only — do not split byte 2 twice.
+    BBI_BYTE spare_byte2_ecc2_or_marker <format=hex>;
+
+    // spare[0x03]. Status Register 1 (NAND cmd 70h). Masks in unand/s34ml.py:
+    // SR1_PROGRAM_STATUS=0x01, SR1_ERASE_STATUS=0x02, SR1_PROGRAM_FAIL=0x08,
+    // SR1_ERASE_FAIL=0x10, SR1_ECC_UNCOR=0x20, SR1_CCE=0x40, SR1_PREVIOUS_STATUS=0x80.
+    // Bit7 plus spare[8] bit7 feeds SR2 composition in decode_spare().
+    SR1_BITS spare_status_sr1 <format=hex>;
+
+    // spare[0x04]. Tag / class. OpenTL: 0x00 or 0x24 ('$') after ntl_map_page_state
+    // for kernel-tagged virt decode; 0xFF erased-like (SpareRecord.kernel_tagged_like).
+    // See unand/s34ml.py docstring (lines 66-71).
+    SPARE_TAG_BYTE spare_tag <format=hex>;
+
+    // spare[0x05]. Reserved / vendor. render_spare_table prints additional spare;
+    // OpenTL may use nearby bytes — opaque without firmware notes.
+    ubyte spare_reserved_05 <format=hex>;
+
+    // spare[0x06]. render_spare_table demo mentions XOR here; OpenTL xsum is spare[0x0F].
+    ubyte spare_reserved_06 <format=hex>;
+
+    // spare[0x07]. Reserved / padding.
+    ubyte spare_reserved_07 <format=hex>;
+
+    // spare[0x08]. OpenTL ntl_prepare_wspare §7.4b merged flags. decode_spare uses
+    // mask 0x04 = mirror_duplicate_chain_flag (SpareRecord). SR2 from (sr1>>7)|(raw[8]&0x80).
+    FLAGS08_BITS spare_flags_08 <format=hex>;
+
+    // spare[0x09:0x0A] LE16. Phys erase-unit low. With [0x10:0x11] -> SpareRecord.phys_u32.
+    // Chain-step next phys uses different packing (next_phys_from_spare_chain_step).
+    ushort spare_phys_block_lo <format=hex>;
+
+    // spare[0x0B:0x0C] LE16. Virt block low. High at [0x12:0x13] for virt_u32.
+    // ntl_find_phy §7.3 (spare64_bbm_field_map.md).
+    ushort spare_virt_block_lo <format=hex>;
+
+    // spare[0x0D]. Page in erase block (0..63). ntl_find_phy match; xsum int8 term
+    // in opentl/spare_layout.compute_spare_xsum.
+    ubyte spare_page_in_block <format=hex>;
+
+    // spare[0x0E]. OpenTL xsum partial term (§7.4a), int8 in sum.
+    ubyte spare_xsum_base <format=hex>;
+
+    // spare[0x0F]. Stored xsum; must equal compute_spare_xsum (mask 0xFF). spare_decoded line.
+    ubyte spare_xsum_stored <format=hex>;
+
+    // spare[0x10:0x11] LE16. High half for phys_u32: lo9_10 | (hi << 16).
+    ushort spare_phys_id_hi <format=hex>;
+
+    // spare[0x12:0x13] LE16. High half for virt_u32 (same compose pattern as phys).
+    ushort spare_virt_id_hi <format=hex>;
+
+    // spare[0x14..0x3F] (44 B). Tail OOB not covered by SpareRecord; vendor markers
+    // (e.g. BootCode), extra ECC, or 0xFF. Split further only if datasheet names bytes.
+    ubyte spare_vendor_tail_14_to_3F[44] <format=hex>;
+
+    local string spare_decoded <read=S34MlSpareDecodedRead, optimize=false, comment="spare analysis">;
+} S34ML_SPARE64;
+
+string BbiByteRead( BBI_BYTE v ) {
+    int b;
+    b = v & 0xFF;
+    if( b == 0x00 )
+        return "BAD BLOCK (0x00)";
+    if( b == 0xFF )
+        return "GOOD (0xFF)";
+    string s;
+    SPrintf( s, "0x%02X (ambiguous - see ECC2/BBI comment)", b );
+    return s;
+}
+
+// Same byte lane as OpenTL xsum (opentl/spare_layout) at absolute spare offset ss.
+int S34MlSpareXsumFromSpareStart( int64 ss ) {
+    int b9 = ReadUByte( ss + 9 ) & 0xFF;
+    int b10 = ReadUByte( ss + 10 ) & 0xFF;
+    int b11 = ReadUByte( ss + 11 ) & 0xFF;
+    int b12 = ReadUByte( ss + 12 ) & 0xFF;
+    int b16 = ReadUByte( ss + 16 ) & 0xFF;
+    int b17 = ReadUByte( ss + 17 ) & 0xFF;
+    int b18 = ReadUByte( ss + 18 ) & 0xFF;
+    int b19 = ReadUByte( ss + 19 ) & 0xFF;
+    int partial = SpareI8(b9) + SpareI8(b10) + SpareI8(b11) + SpareI8(b12)
+        + SpareI8(b16) + SpareI8(b17) + SpareI8(b18) + SpareI8(b19);
+    int total = SpareI8(ReadUByte(ss + 8)) + SpareI8(ReadUByte(ss + 0x0D))
+        + SpareI8(ReadUByte(ss + 0x0E)) + partial;
+    return total & 0xFF;
+}
+
+int S34MlSpareComputeXsum( S34ML_SPARE64 &s ) {
+    return S34MlSpareXsumFromSpareStart( startof(s) );
+}
+
+string S34MlSr1MaskTextFromBits( SR1_BITS sr ) {
+    string t;
+    t = "";
+    if( sr.prog_status )
+        t = t + "PROG ";
+    if( sr.erase_status )
+        t = t + "ERS ";
+    if( sr.prog_fail )
+        t = t + "PFAIL ";
+    if( sr.erase_fail )
+        t = t + "EFAIL ";
+    if( sr.ecc_uncor )
+        t = t + "ECC_UNCOR ";
+    if( sr.cce )
+        t = t + "CCE ";
+    if( sr.prev_status )
+        t = t + "PREV ";
+    if( t == "" )
+        t = "(none) ";
+    return t;
+}
+
+string S34MlSpareDecodedRead( S34ML_SPARE64 &s ) {
+    string r;
+    string sr1t;
+    string xsum_label;
+    int phys_lo = s.spare_phys_block_lo & 0xFFFF;
+    int phys_hi = s.spare_phys_id_hi & 0xFFFF;
+    int virt_lo = s.spare_virt_block_lo & 0xFFFF;
+    int virt_hi = s.spare_virt_id_hi & 0xFFFF;
+    int phys_u = phys_lo | (phys_hi << 16);
+    int virt_u = virt_lo | (virt_hi << 16);
+    int b16 = s.spare_phys_id_hi & 0xFF;
+    int b17 = (s.spare_phys_id_hi >> 8) & 0xFF;
+    int chain_u = phys_lo | (b16 << 16) | (b17 << 24);
+    int xc = S34MlSpareComputeXsum( s );
+    int xs = s.spare_xsum_stored & 0xFF;
+    int xok = ((xc & 0xFF) == xs) ? 1 : 0;
+    int tagged = 0;
+    if( (s.spare_tag == 0) || (s.spare_tag == 0x24) )
+        tagged = 1;
+    int mirr = (s.spare_flags_08.mirror_dup != 0) ? 1 : 0;
+    int erased = 0;
+    if( (s.spare_tag == 0xFF) &&
+        ((s.spare_phys_block_lo & 0xFFFF) == 0xFFFF) &&
+        ((s.spare_virt_block_lo & 0xFFFF) == 0xFFFF) &&
+        ((s.spare_xsum_stored & 0xFF) == 0xFF) )
+        erased = 1;
+    int sr = ReadUByte(startof(s.spare_status_sr1)) & 0xFF;
+    sr1t = S34MlSr1MaskTextFromBits( s.spare_status_sr1 );
+    if( xok )
+        xsum_label = "OK";
+    else
+        xsum_label = "MISMATCH";
+    SPrintf(r,
+        "phys_u32=0x%08X virt_u32=0x%08X\nchain_next_phys=0x%08X (mode2)\nxsum_calc=0x%02X xsum_stored=0x%02X %s\nkernel_tagged_like=%d mirror_dup=%d\nerased_page=%d\nSR1=0x%02X masks:%s",
+        phys_u, virt_u, chain_u, xc & 0xFF, xs, xsum_label, tagged, mirr, erased, sr, sr1t);
+    return r;
+}
+
+typedef struct <size=NAND_PAGE_STRIDE, read=S34MlInlinePageRowRead> {
+    // 2048 B MTD main for this NAND page. OpenTL disk uses 512 B sectors — four share
+    // this page and the single 64 B spare row (unand/README.md). File offset in page: 0..2047.
+    ubyte main_plane[NAND_PAGE_MAIN];
+
+    // 64 B OOB; offsets 2048..2111 within each 2112-byte stride.
+    S34ML_SPARE64 spare;
+} S34ML_INLINE_PAGE;
+
+string S34MlInlinePageRowRead( S34ML_INLINE_PAGE &p ) {
+    int64 ss;
+    int tag, phys_lo, virt_lo, xs, flags, xc, erased, xbad, mirr, tagged, bbi, sr1, sr1fault;
+    string out;
+    ss = startof(p) + NAND_PAGE_MAIN;
+    tag = ReadUByte( ss + 4 ) & 0xFF;
+    phys_lo = ReadUShort( ss + 9 ) & 0xFFFF;
+    virt_lo = ReadUShort( ss + 11 ) & 0xFFFF;
+    xs = ReadUByte( ss + 0x0F ) & 0xFF;
+    flags = ReadUByte( ss + 8 ) & 0xFF;
+    bbi = ReadUByte( ss + 2 ) & 0xFF;
+    sr1 = ReadUByte( ss + 3 ) & 0xFF;
+    xc = S34MlSpareXsumFromSpareStart( ss ) & 0xFF;
+    erased = 0;
+    if( (tag == 0xFF) && (phys_lo == 0xFFFF) && (virt_lo == 0xFFFF) && (xs == 0xFF) )
+        erased = 1;
+    xbad = (xc != xs) ? 1 : 0;
+    mirr = ((flags & 4) != 0) ? 1 : 0;
+    tagged = ((tag == 0) || (tag == 0x24)) ? 1 : 0;
+    sr1fault = ((sr1 & 0x78) != 0) ? 1 : 0;
+    out = "";
+    if( bbi == 0x00 )
+        out = out + "BBI bad ";
+    if( sr1fault )
+        out = out + "SR1 fault ";
+    if( erased )
+        out = out + "ERASED-like ";
+    if( xbad )
+        out = out + "xsum BAD ";
+    if( mirr )
+        out = out + "MIRROR ";
+    if( tagged )
+        out = out + "TAGGED ";
+    if( out == "" )
+        return "-";
+    return out;
+}
+
+if( FileSize() % NAND_PAGE_STRIDE != 0 )
+    Warning( "File size is not a multiple of 2112 bytes. This template expects INLINE 2048+64 NAND pages (see reference/010editor/README.md). Remainder bytes will not form a full final page in this parse." );
+
+while( FTell() < FileSize() ) {
+    S34ML_INLINE_PAGE page;
+}

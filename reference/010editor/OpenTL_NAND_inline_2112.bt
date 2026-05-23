@@ -1,0 +1,227 @@
+// =============================================================================
+// OpenTL (BCM / Pace 5268) — INLINE NAND dump — 2048 B main + 64 B spare per page
+// =============================================================================
+//
+// Spare field names align with kernel helpers and Python: ntl_prepare_wspare,
+// ntl_find_phy, ntl_compute_spare_xsum, ntl_put_chain_in_array (mode 2).
+// Geometry: unand/geometry.py page_phys = 2112.
+//
+// DECODED ROW (Template Results)
+//   spare_decoded (read=OpenTlSpareDecodedRead) — phys/virt/chain/xsum/flags/erased; FLAGS08
+//   checkboxes; SPARE_TAG_BYTE inline Str() (010 v12+). Collapsed page[i]: read=OpenTlInlinePageRowRead
+//   (ERASED-like, xsum BAD, MIRROR, TAGGED) via ReadU* at spare base — safe with On-Demand pages.
+//   See CustomVariables.htm, Bitfields.htm, OnDemand.htm.
+//
+// NOT PARSED
+//   Logical-only and flat-tail packings — unand/README.md, reference/010editor/README.md.
+//
+// REFERENCES (repo)
+//   opentl/spare_layout.py        SpareRecord, compute_spare_xsum, xsum_matches
+//   opentl/spare_chain_replay.py  next_phys_from_spare_chain_step (chain phys != phys_u32)
+//   reference/spare64_bbm_field_map.md  §7.3 read, §7.4a xsum, §7.4b prepare
+//   reference/opentl_kernel_ghidra.md   (if present)
+//
+// 010 MANUAL
+//   https://web.archive.org/web/20260129195303/https://www.sweetscape.com/010editor/manual/IntroTemplates.htm
+//
+// Per-field narrative is in // comments only. <comment> is reserved for rare analysis
+// (e.g. spare_decoded). Collapsed page rows use struct read= (on-demand-safe file reads).
+// =============================================================================
+
+LittleEndian();
+
+#define OT_PAGE_MAIN   2048
+#define OT_PAGE_SPARE    64
+#define OT_PAGE_STRIDE 2112
+
+// spare[0x08] as LE bitfield (Bitfields.htm): :1 members show as checkboxes in Template Results.
+typedef struct {
+    ubyte param4_pair : 2;  // bits 0-1: (param_4 & 3) from ntl_prepare_wspare
+    ubyte mirror_dup  : 1;  // bit 2: 0x04 duplicate/mirror chain hop
+    ubyte param9_bit  : 1;  // bit 3: (param_9 & 8)
+    ubyte unused_hi   : 4;  // bits 4-7
+} FLAGS08_BITS;
+
+// spare[0x04] tag/status — Value column via inline read (CustomVariables.htm, 010 v12+ Str()).
+typedef ubyte SPARE_TAG_BYTE <read=Str(
+    this == 0 ? "TAGGED (NUL)" :
+    this == 0x24 ? "TAGGED ($)" :
+    this == 0xFF ? "ERASED" : "non-std (see source .bt)")>;
+
+// Signed int8 interpretation of one raw byte (matches opentl/spare_layout._i8).
+int SpareI8( int b ) {
+    b = b & 0xFF;
+    if( b >= 128 )
+        return b - 256;
+    return b;
+}
+
+typedef struct {
+    // spare[0x00]. First byte of [0..3] ECC/vendor lane. Kernel mixes large vs small
+    // page (*(ctx+0x10) vs 0x200); dumps may be host-corrected. SpareRecord keeps raw only.
+    ubyte spare_ecc_or_vendor_0 <format=hex>;
+
+    // spare[0x01]. Second byte of ECC/vendor lane (see [0x00]).
+    ubyte spare_ecc_or_vendor_1 <format=hex>;
+
+    // spare[0x02]. Third byte; may collide with vendor BB marking in raw NAND views.
+    // OpenTL tagged virt uses spare[4] + LE16 @ 11..12 + extensions, not this byte alone.
+    ubyte spare_ecc_or_vendor_2 <format=hex>;
+
+    // spare[0x03]. Fourth byte of [0..3] lane; S34ML docs often call this SR1 — neutral name here.
+    ubyte spare_ecc_or_vendor_3 <format=hex>;
+
+    // spare[0x04]. Prepare: param_7 / class (ntl_prepare_wspare §7.4b). Read: ntl_find_phy
+    // expects 0x00 or 0x24 for kernel_tagged_like; 0xFF erased-like (§7.3, spare_layout.py).
+    SPARE_TAG_BYTE spare_status_or_tag <format=hex>;
+
+    // spare[0x05]. Not decoded by spare_layout core helpers; vendor padding / reserved.
+    ubyte spare_reserved_05 <format=hex>;
+
+    // spare[0x06]. Reserved / vendor (same as [0x05]).
+    ubyte spare_reserved_06 <format=hex>;
+
+    // spare[0x07]. Reserved / vendor.
+    ubyte spare_reserved_07 <format=hex>;
+
+    // spare[0x08]. ntl_prepare_wspare: (param_4&3)|(param_8&4)|(param_9&8). Mask 0x04 =
+    // duplicate/mirror chain hop (SpareRecord.mirror_duplicate_chain_flag; chain_v1 tie-break).
+    // next_phys_from_spare_chain_step returns spare[8]&4 as flags_u16. Other bits: SR2 paths.
+    FLAGS08_BITS spare_flags_byte8 <format=hex>;
+
+    // spare[0x09:0x0A] LE16. Phys low. phys_u32 = lo | (LE16@[0x10:0x11] << 16) per SpareRecord.
+    // Chain mode 2 next phys: lo9_10 | (sp[16]<<16) | (sp[17]<<24) — NOT same algebra as phys_u32
+    // (spare_chain_replay.py). Use next_phys_from_spare_chain_step for hops; phys_u32 for table view.
+    ushort spare_phys_id_lo <format=hex>;
+
+    // spare[0x0B:0x0C] LE16. Virt low. Full virt_u32 with hi LE16 @ [0x12:0x13]. ntl_find_phy §7.3.
+    ushort spare_virt_id_lo <format=hex>;
+
+    // spare[0x0D]. Page index in erase block. ntl_find_phy compares to request. xsum uses int8(0xD).
+    ubyte spare_page_in_block <format=hex>;
+
+    // spare[0x0E]. int8 term inside ntl_compute_spare_xsum / compute_spare_xsum (§7.4a).
+    ubyte spare_xsum_partial_e <format=hex>;
+
+    // spare[0x0F]. Stored checksum. Algorithm (Python opentl/spare_layout.py): i8 each byte;
+    // partial = i8(9)+i8(10)+i8(11)+i8(12); large page +i8(16..19); total = i8(8)+i8(0xD)+i8(0xE)+partial;
+    // result & 0xFF must equal spare[0x0F] (xsum_matches). spare_decoded shows computed value.
+    ubyte spare_xsum_stored <format=hex>;
+
+    // spare[0x10:0x11] LE16. phys_u32 high half. Same bytes OR-shifted differently for chain next_phys.
+    ushort spare_phys_id_hi <format=hex>;
+
+    // spare[0x12:0x13] LE16. virt_u32 high half.
+    ushort spare_virt_id_hi <format=hex>;
+
+    // spare[0x14..0x3F] (44 B). Tail not exposed by SpareRecord; BootCode ASCII possible;
+    // chain replay does not need this region for next-phys + mirror bit.
+    ubyte spare_tail_14_to_3F[44] <format=hex>;
+
+    // Template Results: decoded phys/virt/xsum (no file bytes consumed).
+    local string spare_decoded <read=OpenTlSpareDecodedRead, optimize=false, comment="spare analysis">;
+} OPENTL_SPARE64;
+
+// Absolute file offset of spare start (same xsum lane as opentl/spare_layout.compute_spare_xsum).
+int OpenTlSpareXsumFromSpareStart( int64 ss ) {
+    int b9 = ReadUByte( ss + 9 ) & 0xFF;
+    int b10 = ReadUByte( ss + 10 ) & 0xFF;
+    int b11 = ReadUByte( ss + 11 ) & 0xFF;
+    int b12 = ReadUByte( ss + 12 ) & 0xFF;
+    int b16 = ReadUByte( ss + 16 ) & 0xFF;
+    int b17 = ReadUByte( ss + 17 ) & 0xFF;
+    int b18 = ReadUByte( ss + 18 ) & 0xFF;
+    int b19 = ReadUByte( ss + 19 ) & 0xFF;
+    int partial = SpareI8(b9) + SpareI8(b10) + SpareI8(b11) + SpareI8(b12)
+        + SpareI8(b16) + SpareI8(b17) + SpareI8(b18) + SpareI8(b19);
+    int total = SpareI8(ReadUByte(ss + 8)) + SpareI8(ReadUByte(ss + 0x0D))
+        + SpareI8(ReadUByte(ss + 0x0E)) + partial;
+    return total & 0xFF;
+}
+
+int OpenTlSpareComputeXsum( OPENTL_SPARE64 &s ) {
+    return OpenTlSpareXsumFromSpareStart( startof(s) );
+}
+
+string OpenTlSpareDecodedRead( OPENTL_SPARE64 &s ) {
+    string r;
+    string xsum_label;
+    int phys_lo = s.spare_phys_id_lo & 0xFFFF;
+    int phys_hi = s.spare_phys_id_hi & 0xFFFF;
+    int virt_lo = s.spare_virt_id_lo & 0xFFFF;
+    int virt_hi = s.spare_virt_id_hi & 0xFFFF;
+    int phys_u = phys_lo | (phys_hi << 16);
+    int virt_u = virt_lo | (virt_hi << 16);
+    int b16 = s.spare_phys_id_hi & 0xFF;
+    int b17 = (s.spare_phys_id_hi >> 8) & 0xFF;
+    int chain_u = phys_lo | (b16 << 16) | (b17 << 24);
+    int xc = OpenTlSpareComputeXsum( s );
+    int xs = s.spare_xsum_stored & 0xFF;
+    int xok = ((xc & 0xFF) == xs) ? 1 : 0;
+    int tagged = 0;
+    if( (s.spare_status_or_tag == 0) || (s.spare_status_or_tag == 0x24) )
+        tagged = 1;
+    int mirr = (s.spare_flags_byte8.mirror_dup != 0) ? 1 : 0;
+    int erased = 0;
+    if( (s.spare_status_or_tag == 0xFF) &&
+        ((s.spare_phys_id_lo & 0xFFFF) == 0xFFFF) &&
+        ((s.spare_virt_id_lo & 0xFFFF) == 0xFFFF) &&
+        ((s.spare_xsum_stored & 0xFF) == 0xFF) )
+        erased = 1;
+    if( xok )
+        xsum_label = "OK";
+    else
+        xsum_label = "MISMATCH";
+    SPrintf(r,
+        "phys_u32=0x%08X virt_u32=0x%08X\nchain_next_phys=0x%08X (ntl_put_chain mode2)\nxsum_calc=0x%02X xsum_stored=0x%02X %s\nkernel_tagged_like=%d mirror_dup=%d\nerased_page=%d",
+        phys_u, virt_u, chain_u, xc & 0xFF, xs, xsum_label, tagged, mirr, erased);
+    return r;
+}
+
+// On-Demand (OnDemand.htm): <size=stride> defers main+spare until each page node is expanded — fast on huge dumps.
+// read= shows a one-line hint beside collapsed page[i] (ReadU* only — works before spare is parsed).
+typedef struct <size=OT_PAGE_STRIDE, read=OpenTlInlinePageRowRead> {
+    // 2048 B MTD page; four 512 B OpenTL sectors share this page and the following spare.
+    ubyte main_plane[OT_PAGE_MAIN];
+
+    // 64 B spare row (offsets 2048..2111 mod stride).
+    OPENTL_SPARE64 spare;
+} OPENTL_INLINE_PAGE;
+
+string OpenTlInlinePageRowRead( OPENTL_INLINE_PAGE &p ) {
+    int64 ss;
+    int tag, phys_lo, virt_lo, xs, flags, xc, erased, xbad, mirr, tagged;
+    string out;
+    ss = startof(p) + OT_PAGE_MAIN;
+    tag = ReadUByte( ss + 4 ) & 0xFF;
+    phys_lo = ReadUShort( ss + 9 ) & 0xFFFF;
+    virt_lo = ReadUShort( ss + 11 ) & 0xFFFF;
+    xs = ReadUByte( ss + 0x0F ) & 0xFF;
+    flags = ReadUByte( ss + 8 ) & 0xFF;
+    xc = OpenTlSpareXsumFromSpareStart( ss ) & 0xFF;
+    erased = 0;
+    if( (tag == 0xFF) && (phys_lo == 0xFFFF) && (virt_lo == 0xFFFF) && (xs == 0xFF) )
+        erased = 1;
+    xbad = (xc != xs) ? 1 : 0;
+    mirr = ((flags & 4) != 0) ? 1 : 0;
+    tagged = ((tag == 0) || (tag == 0x24)) ? 1 : 0;
+    out = "";
+    if( erased )
+        out = out + "ERASED-like ";
+    if( xbad )
+        out = out + "xsum BAD ";
+    if( mirr )
+        out = out + "MIRROR ";
+    if( tagged )
+        out = out + "TAGGED ";
+    if( out == "" )
+        return "-";
+    return out;
+}
+
+if( FileSize() % OT_PAGE_STRIDE != 0 )
+    Warning( "File size is not a multiple of 2112 bytes. Expected INLINE OpenTL / Pace large-page NAND (2048+64). See reference/010editor/README.md." );
+
+while( FTell() < FileSize() ) {
+    OPENTL_INLINE_PAGE page;
+}
