@@ -20,8 +20,10 @@ from boardfs.ext2_path import (
     read_ext2_regular_file,
 )
 
+from paceflash.board_info import dump_board_info
 from paceflash.board_param import dump_paramtool
 from paceflash.eapol_cert import dump_eapol_cert
+from paceflash.network_config import gen_network_config
 from paceflash.factory_params import dump_factory_params
 from paceflash.http_auth import dump_http_auth
 from paceflash.flash_session import open_opentla4_ext2
@@ -484,6 +486,77 @@ def _run_dump_eapol_cert(args: argparse.Namespace, flash_path: Path) -> int:
     return 0 if doc.get("ok") else 1
 
 
+def _print_gen_network_config_human(doc: dict[str, Any]) -> None:
+    if not doc.get("ok"):
+        print(f"gen-network-config: {doc.get('error', doc)}")
+        return
+    print(f"Profile: {doc.get('profile')}")
+    print(f"Interface: {doc.get('interface')}")
+    print(f"EAP identity: {doc.get('eap_identity')}")
+    if doc.get("wan_mac"):
+        print(f"WAN MAC (clone): {doc.get('wan_mac')}")
+    if doc.get("vendor_class"):
+        print(f"DHCP vendor class: {doc.get('vendor_class')}")
+    print(f"DHCP ClientIdentifier: {doc.get('dhcp_client_identifier')}")
+    if doc.get("ca_cert"):
+        print(f"CA bundle: {doc.get('ca_cert')}")
+    if doc.get("lightspeed_p12"):
+        print(f"lightspeed_p12: {doc.get('lightspeed_p12')}")
+    print(f"Output: {doc.get('out_dir')}")
+    if doc.get("dry_run"):
+        print("(dry-run — no files written)")
+        return
+    for label, path in sorted((doc.get("files") or {}).items()):
+        print(f"  {label}: {path}")
+    print(f"PKI material (copy to {doc.get('pki_dir')}):")
+    for label, path in sorted((doc.get("pki_out_files") or doc.get("pki_files") or {}).items()):
+        print(f"  {label}: {path}")
+
+
+def _run_gen_network_config(args: argparse.Namespace) -> int:
+    flash_path: Path | None = None
+    try:
+        if getattr(args, "flash_opt", None) is not None or (
+            getattr(args, "operands", None) and not getattr(args, "client_pem", None)
+        ):
+            flash_path = _resolve_flash_path(args)
+    except SystemExit:
+        flash_path = None
+
+    if flash_path is None and getattr(args, "client_pem", None) is None:
+        print(
+            "paceflash: gen-network-config requires --flash, a FLASH operand, or --client-pem",
+            file=sys.stderr,
+        )
+        return 2
+    doc = gen_network_config(
+        interface=getattr(args, "interface", "wan0"),
+        profile="router",
+        out_dir=getattr(args, "out_dir", Path("lightspeed-network")),
+        ca_cert=getattr(args, "ca_cert", None),
+        eapol_certs_pkgstream=getattr(args, "eapol_certs_pkgstream", None),
+        client_pem=getattr(args, "client_pem", None),
+        eap_identity=getattr(args, "identity", None),
+        wan_mac=getattr(args, "wan_mac", None),
+        clone_wan_mac=not getattr(args, "no_clone_mac", False),
+        vendor_class=getattr(args, "vendor_class", None),
+        firmware_version=getattr(args, "firmware_version", None),
+        product_class=getattr(args, "product_class", "homeportal"),
+        modem_dhcp_match=not getattr(args, "no_modem_dhcp", False),
+        dhcp_client_id_override=getattr(args, "dhcp_client_id", None),
+        serial=getattr(args, "serial", None),
+        flash_path=flash_path,
+        cert=getattr(args, "cert", "lightspeed"),
+        include_p12=not getattr(args, "no_p12", False),
+        dry_run=getattr(args, "dry_run", False),
+    )
+    if args.json:
+        print(json.dumps(doc, indent=2))
+    else:
+        _print_gen_network_config_human(doc)
+    return 0 if doc.get("ok") else 1
+
+
 def _print_paramtool_human(doc: dict[str, Any]) -> None:
     print(f"Flash: {doc.get('flash')}")
     if not doc.get("ok"):
@@ -537,6 +610,99 @@ def _run_paramtool(args: argparse.Namespace, flash_path: Path) -> int:
         if isinstance(val, str):
             Path(args.output).expanduser().write_text(val, encoding="ascii", errors="replace")
             print(f"Wrote {doc['key']} to {Path(args.output).resolve()}", file=sys.stderr)
+    return 0 if doc.get("ok") else 1
+
+
+def _print_board_info_human(doc: dict[str, Any]) -> None:
+    print(f"Flash: {doc.get('flash')}")
+    lp = doc.get("loader_partition")
+    if isinstance(lp, dict):
+        print(
+            f"Loader MTD: offset={lp.get('offset')} size={lp.get('size')} "
+            f"(index {lp.get('index')})"
+        )
+    ident = doc.get("identity") or {}
+    if ident:
+        print("Factory identity (loader MTD):")
+        for k in ("model", "sn", "mac", "pca", "mfg_timestamp"):
+            if ident.get(k):
+                print(f"  {k}={ident[k]}")
+    fac = doc.get("factory") or {}
+    if not fac.get("ok"):
+        print(f"Factory block: {fac.get('error', fac)}")
+    pt = doc.get("paramtool_selected") or {}
+    if pt:
+        print("Paramtool (selected):")
+        for k, v in sorted(pt.items()):
+            print(f"  {k}={v}")
+    if doc.get("pkgd_downgrade_policy_note"):
+        print(doc["pkgd_downgrade_policy_note"])
+    av = doc.get("active_version") or {}
+    if av.get("ok"):
+        print(
+            f"Active firmware (ext2 {av.get('ext2_path')} → {av.get('runtime_path')}): "
+            f"{av.get('text', '').splitlines()[0] if av.get('text') else ''}"
+        )
+        parsed = av.get("parsed") or {}
+        fields = parsed.get("fields") or {}
+        if fields:
+            print(
+                "  parsed: "
+                f"{fields.get('n0_major')}.{fields.get('n1_minor')}."
+                f"{fields.get('n2_build')}.{fields.get('n3_patch')}"
+            )
+            note = parsed.get("pkgd_downgrade_note")
+            if note:
+                print(f"  ({note})")
+    else:
+        print(f"Active firmware file: {av.get('error', 'not found on ext2')}")
+    for vf in doc.get("version_files") or []:
+        if vf.get("ok"):
+            continue
+        print(f"  missing: {vf.get('ext2_path')} ({vf.get('error')})")
+    xc = doc.get("version_crosscheck")
+    if xc:
+        print(
+            "CMDB vs ext2: "
+            f"part1.Name={xc.get('cmdb_part1_name')!r} "
+            f"ext2={xc.get('ext2_active_first_line')!r} "
+            f"match={xc.get('match')}"
+        )
+    for block in doc.get("cmdb_ext2") or []:
+        if not block.get("ok"):
+            continue
+        mu = block.get("mgmt_upgstate") or {}
+        print(f"\nCMDB {block.get('path')} mgmt_upgstate:")
+        print(f"  part1: Name={mu.get('part1_name')!r} Status={mu.get('part1_status')!r}")
+        print(f"  part2: Name={mu.get('part2_name')!r} Status={mu.get('part2_status')!r}")
+        if mu.get("part2_path"):
+            print(f"  part2_path={mu.get('part2_path')}")
+    for block in doc.get("tlpart_mgmt_upgstate") or []:
+        mu = block.get("mgmt_upgstate") or {}
+        print(f"\ntlpart mgmt_upgstate @{block.get('offset', 0):#x}:")
+        print(f"  part1.Name={mu.get('part1_name')!r}")
+    print("\nlibboard RE (version file API):")
+    bb = (doc.get("libboard_re") or {}).get("board_build_version") or {}
+    for line in bb.get("offline_ext2_equivalents") or []:
+        print(f"  {line}")
+    for w in doc.get("warnings") or []:
+        print(f"paceflash: warning: {w}", file=sys.stderr)
+
+
+def _run_board_info(args: argparse.Namespace, flash_path: Path) -> int:
+    doc = dump_board_info(
+        flash_path,
+        cmdline=_cmdline_from_args(args),
+        nand_translate=not getattr(args, "no_nand_translate", False),
+        nand_translate_mode=getattr(args, "nand_mode", "inline-2112"),
+        bbm_chain_aware=getattr(args, "bbm_chain_aware", False),
+        redact=getattr(args, "redact", False),
+        include_tlpart_scan=not getattr(args, "no_tlpart_scan", False),
+    )
+    if args.json:
+        print(json.dumps(doc, indent=2))
+    else:
+        _print_board_info_human(doc)
     return 0 if doc.get("ok") else 1
 
 
@@ -1059,6 +1225,140 @@ def main(argv: list[str] | None = None) -> int:
     )
     eap.add_argument("--json", action="store_true")
 
+    _gnc_epilog = """
+examples:
+  %(prog)s "PACE 5268AC S34ML01G1@TSOP48.BIN"
+  %(prog)s "PACE ...BIN" --out-dir ./lightspeed-network --interface wan0
+  %(prog)s "PACE ...BIN" --wan-mac d4:b2:7a:6b:b1:4c --firmware-version "11.14.1.123456"
+  %(prog)s --client-pem ./lightspeed_eapol.pem --serial 38161N043704
+
+writes (under --out-dir):
+  pki/lightspeed.p12, lightspeed_eapol.pem, cacerts.pem, client.pem, client.key
+  wpa_supplicant-<iface>.conf, <iface>.network, wpa_supplicant@<iface>.service.d/, README.md
+
+from flash: dump-eapol-cert (lightspeed_p12), auto CA from eapol-certs pkgstream.
+DHCP (default): ClientIdentifier 00D09E-{sn}, MACAddress clone, VendorClassIdentifier
+2WHPL M.m.b, RequestOptions + max message size. Option 125 notes in README.
+See reference/linux_8021x_lightspeed.md.
+""".strip()
+    gnc = sub.add_parser(
+        "gen-network-config",
+        help="802.1X router bundle: wpa_supplicant + systemd-networkd + PKI + DHCP parity",
+        description=(
+            "Generate wpa_supplicant and systemd-networkd files for Lightspeed WAN "
+            "EAP-TLS (router profile). With a flash dump, extracts and decrypts "
+            "lightspeed_p12, resolves operator CA, and emits modem-like DHCP options."
+        ),
+        epilog=_gnc_epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flash_options(gnc, suppress_if_unset=True)
+    _add_nand_args(gnc)
+    _add_operands_arg(
+        gnc,
+        metavar="[FLASH]",
+        help_text="Flash dump (optional when using --flash PATH)",
+    )
+    gnc.add_argument(
+        "--interface",
+        default="wan0",
+        help="Linux WAN interface name (default wan0)",
+    )
+    gnc.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path("lightspeed-network"),
+        metavar="DIR",
+        help="Output directory for configs and pki/ subtree (default ./lightspeed-network)",
+    )
+    gnc.add_argument(
+        "--ca-cert",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Operator CA bundle PEM (default: extracted prod bundle or --eapol-certs-pkgstream)",
+    )
+    gnc.add_argument(
+        "--eapol-certs-pkgstream",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="att_unified_eapol-certs.pkgstream (extracted if CA PEM not already present)",
+    )
+    gnc.add_argument(
+        "--client-pem",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Decrypted client PEM (instead of --flash + dump-eapol-cert)",
+    )
+    gnc.add_argument(
+        "--identity",
+        default=None,
+        help="EAP-TLS identity override (default: cert subject CN / MAC)",
+    )
+    gnc.add_argument(
+        "--wan-mac",
+        default=None,
+        metavar="MAC",
+        help="WAN MAC override for [Link] MACAddress (default: cert CN or factory mac=)",
+    )
+    gnc.add_argument(
+        "--no-clone-mac",
+        action="store_true",
+        help="Do not set MACAddress in the .network file",
+    )
+    gnc.add_argument(
+        "--vendor-class",
+        default=None,
+        metavar="STRING",
+        help='DHCP option 60 (default: derive "2WHPL M.m.b" from --firmware-version)',
+    )
+    gnc.add_argument(
+        "--firmware-version",
+        default=None,
+        metavar="TEXT",
+        help='Dotted build string for vendor class (e.g. "11.14.1.123456" -> 2WHPL 11.14.1)',
+    )
+    gnc.add_argument(
+        "--product-class",
+        default="homeportal",
+        help="TR-069 ProductClass for README / option 125 notes (default homeportal)",
+    )
+    gnc.add_argument(
+        "--no-modem-dhcp",
+        action="store_true",
+        help="Omit modem-like RequestOptions / max-message-size / vendor class from .network",
+    )
+    gnc.add_argument(
+        "--dhcp-client-id",
+        default=None,
+        metavar="ID",
+        help="DHCP ClientIdentifier override (default 00D09E-{factory sn})",
+    )
+    gnc.add_argument(
+        "--serial",
+        default=None,
+        help="Factory serial when using --client-pem without --flash",
+    )
+    gnc.add_argument(
+        "--cert",
+        choices=("lightspeed", "device"),
+        default="lightspeed",
+        help="PKCS#12 name when extracting from flash (default lightspeed / lightspeed_p12)",
+    )
+    gnc.add_argument(
+        "--no-p12",
+        action="store_true",
+        help="Do not write pki/lightspeed.p12 (PEM split only)",
+    )
+    gnc.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Plan outputs only; do not write files",
+    )
+    gnc.add_argument("--json", action="store_true")
+
     fp = sub.add_parser(
         "factory-params",
         help="Dump factory manufacturing key=value block from loader MTD (sn, mac, …)",
@@ -1121,6 +1421,29 @@ def main(argv: list[str] | None = None) -> int:
     )
     pt.add_argument("--json", action="store_true")
 
+    bi = sub.add_parser(
+        "board-info",
+        help="Dump factory identity, paramtool keys, ext2 version files, CMDB upgrade state",
+    )
+    _add_global_flash_options(bi, suppress_if_unset=True)
+    _add_nand_args(bi)
+    _add_operands_arg(
+        bi,
+        metavar="[FLASH]",
+        help_text="Flash dump (optional when using --flash PATH)",
+    )
+    bi.add_argument(
+        "--redact",
+        action="store_true",
+        help="Mask factory secrets in output (safe for logs)",
+    )
+    bi.add_argument(
+        "--no-tlpart-scan",
+        action="store_true",
+        help="Skip embedded mgmt_upgstate scan in assembled tlpart",
+    )
+    bi.add_argument("--json", action="store_true")
+
     bci = sub.add_parser(
         "build-carrier-index",
         help="Precompute rootimage/ui squash SHA-256 refs for all 00D09E install pkgstreams",
@@ -1181,6 +1504,9 @@ def main(argv: list[str] | None = None) -> int:
         flash_path = _resolve_flash_path(args)
         return _run_dump_eapol_cert(args, flash_path)
 
+    if args.command == "gen-network-config":
+        return _run_gen_network_config(args)
+
     if args.command == "factory-params":
         flash_path = _resolve_flash_path(args)
         return _run_factory_params(args, flash_path)
@@ -1188,5 +1514,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "paramtool":
         flash_path = _resolve_flash_path(args)
         return _run_paramtool(args, flash_path)
+
+    if args.command == "board-info":
+        flash_path = _resolve_flash_path(args)
+        return _run_board_info(args, flash_path)
 
     return 2

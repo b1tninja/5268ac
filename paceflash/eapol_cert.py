@@ -153,6 +153,7 @@ def dump_eapol_cert(
     output_p12: str | Path | None = None,
     redact_password: bool = False,
     include_pem: bool = False,
+    write_files: bool = True,
 ) -> dict[str, Any]:
     """
     Read assembled ``tlpart``, extract ``lightspeed_p12`` / ``device_p12``, optionally decrypt to PEM.
@@ -253,14 +254,16 @@ def dump_eapol_cert(
         output_pem = auto_pem
 
     p12_path = Path(output_p12).expanduser().resolve()
-    p12_path.parent.mkdir(parents=True, exist_ok=True)
-    p12_path.write_bytes(p12_raw)
     out["p12_path"] = str(p12_path)
+    if write_files:
+        p12_path.parent.mkdir(parents=True, exist_ok=True)
+        p12_path.write_bytes(p12_raw)
 
     if decrypt and pem is not None and output_pem is not None:
         pem_path = Path(output_pem).expanduser().resolve()
-        pem_path.parent.mkdir(parents=True, exist_ok=True)
-        pem_path.write_bytes(pem)
         out["pem_path"] = str(pem_path)
+        if write_files:
+            pem_path.parent.mkdir(parents=True, exist_ok=True)
+            pem_path.write_bytes(pem)
 
     return out

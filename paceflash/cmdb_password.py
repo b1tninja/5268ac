@@ -155,7 +155,9 @@ def verify_user_from_table_xml(
         if fields.get("user") != username:
             continue
         pw = fields.get("password", "")
-        matches = verify_password_candidates(pw, candidates, extra_salts=extra_salts)
+        matches = verify_password_candidates(
+            pw, candidates, extra_salts=[username, *extra_salts]
+        )
         return {
             "ok": True,
             "user": username,

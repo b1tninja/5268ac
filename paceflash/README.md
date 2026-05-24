@@ -57,6 +57,7 @@ Inside **`shell`**, the prompt is **`paceflash:/$`** on the **`opentla4`** ext2 
 | **`factory-params`** | Manufacturing block from **loader** MTD (`sn=`, `mac=`, `devkey=`, …). |
 | **`paramtool`** | Offline **`gw:*`** / `*_p12` keys from **`tlpart`** board_param store. |
 | **`dump-eapol-cert`** | **`lightspeed_p12`** / **`device_p12`** → PEM (needs factory **`devkey`** + **`sn`**). |
+| **`gen-network-config`** | 802.1X router bundle: PKI, wpa_supplicant, systemd-networkd, DHCP modem parity (opt 61/60/55/57, MAC clone). |
 | **`dump-http-auth`** | HTTP realm map, factory **accesscode**, CMDB **`user`** table. |
 | **`build-carrier-index`** | Pkgstream squash digests for upgrade correlation. |
 
@@ -76,7 +77,11 @@ Examples:
 ```powershell
 python -m paceflash paramtool --flash "PACE …BIN" --get gw:trust_engcert
 python -m paceflash factory-params "PACE …BIN" --json --redact
+python -m paceflash board-info "PACE …BIN" --json
 python -m paceflash dump-eapol-cert "PACE …BIN" -o output/lightspeed_eapol.pem
+python -m paceflash gen-network-config "PACE …BIN" --out-dir lightspeed-network
+python -m paceflash gen-network-config "PACE …BIN" --wan-mac d4:b2:7a:6b:b1:4c --firmware-version "11.14.1.123456"
+python -m paceflash gen-network-config --help
 python -m paceflash ls --flash "PACE …BIN" --debug --json
 ```
 
