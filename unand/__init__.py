@@ -31,7 +31,14 @@ from .layout import (
 )
 
 # --- I/O normalize ---
-from .io import extract_spare_bytes, extract_spare_to_file, normalize_to_logical, sha256_logical_plane
+from .io import (
+    denormalize_logical_to_physical,
+    extract_spare_bytes,
+    extract_spare_to_file,
+    normalize_to_logical,
+    patch_logical_bytes,
+    sha256_logical_plane,
+)
 
 # --- MTD cmdline ---
 from .mtd import DEFAULT_MTDPARTS, MtdPart, parse_mtdparts, part_by_name
@@ -81,6 +88,8 @@ __all__ = [
     "extract_spare_bytes",
     "extract_spare_to_file",
     "normalize_to_logical",
+    "denormalize_logical_to_physical",
+    "patch_logical_bytes",
     "sha256_logical_plane",
     # MTD
     "DEFAULT_MTDPARTS",

@@ -13,7 +13,7 @@ Long-form evidence and tooling notes live under [`../reference/`](../reference/)
 |-------|-----------------|
 | NAND controller + chip → **one MTD master** (main user bytes) | `normalize_to_logical`, `LogicalPlane`, `NandGeometry.logical_bytes` |
 | **`mtdparts=`** cmdline on that plane | `unand.mtd.parse_mtdparts` — **only** main-plane offsets/sizes |
-| Logical byte run on a raw dump (no full deinterleave to RAM) | `unand.layout.read_logical_plane_interval` — maps a logical `[start, start+len)` through **LOGICAL_ONLY** / **flat-tail** / **inline 2048+64** packing (used by **`binwalker.extract.flash_layout`** for U-Boot env-sized probes) |
+| Logical byte run on a raw dump (no full deinterleave to RAM) | `unand.layout.read_logical_plane_interval` — maps a logical `[start, start+len)` through **LOGICAL_ONLY** / **flat-tail** / **inline 2048+64** packing (used by **`boardfs.flash_layout`** for U-Boot env-sized probes) |
 | Spare / OOB | **Not** an `mtdparts` slice; optional **offline** sidecar (`spare_out`) in lockstep with pages |
 
 Canonical boot + storage diagrams: [`reference/boot_and_storage.md`](../reference/boot_and_storage.md).
