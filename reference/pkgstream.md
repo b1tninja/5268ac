@@ -373,7 +373,7 @@ The 5268 install carries 11 FILE TLVs and 13 SCRIPT TLVs, all using SHA-1 (the s
 
 ### 9.5 What runs the CRC32 on the uImage
 
-The embedded uImage at pkgstream offset `0x01AE4B7E` carries the standard 64-byte legacy header with **two CRC32s** parsed by [`binwalker/uimage.py`](binwalker/uimage.py):
+The embedded uImage at pkgstream offset `0x01AE4B7E` carries the standard 64-byte legacy header with **two CRC32s** parsed by [`uboot/uimage.py`](../uboot/uimage.py):
 
 | Field | Source struct | Coverage |
 |-------|---------------|----------|
@@ -397,7 +397,7 @@ Valid kernel Found
    Uncompressing Multi-File Image ... OK
 ```
 
-The first `Verifying Checksum` is the install-time integrity check immediately after `tldisk` reads `/sys1/uImage`; the second is the boot-time check before `gunzip`. **`binwalker/uimage.py` parses both CRC fields but does not validate them** — re-run **`dumpimage -l`** or U-Boot's `imi` command to verify, or compute CRC32 over the relevant ranges directly.
+The first `Verifying Checksum` is the install-time integrity check immediately after `tldisk` reads `/sys1/uImage`; the second is the boot-time check before `gunzip`. **`uboot/uimage.py` parses both CRC fields** — re-run **`dumpimage -l`** or U-Boot's `imi` command to verify, or compute CRC32 over the relevant ranges directly.
 
 ### 9.6 What our local tooling does (and does **not**) verify
 
@@ -498,7 +498,7 @@ Tested end-to-end against `firmware_11.5.1.532678/install_package/att-5268-11.5.
 | Flip 1 byte at offset `13500` (inside `lib.sh` payload) | `True` (PKCS#7 doesn't cover payloads) | `1` | **`False`** ← per-FILE digest catches it |
 | Flip 1 byte at offset `100` (inside the SHA-1-signed prefix) | `False` | `0` | **`False`** ← messageDigest claim no longer matches |
 
-(Exercised by `binwalker/tests/test_pkgstream_verify.py::test_live_sample_tamper_*`.)
+(Exercised by pkgstream verification tests.)
 
 Note for the prefix-tamper case: the per-signer RSA signature still verifies as TRUE because RSA covers the (untampered) `authenticatedAttributes` SET, which itself contains the original `messageDigest`. The break is in the binding between that signed `messageDigest` value and the actual prefix bytes — which is exactly what `pkcs7_messageDigest_match` reports.
 
@@ -531,7 +531,7 @@ For the combined parse + verify text dump, obtain the parser’s `parsed` dict (
 
 Setting `analyze_pkgstream(... verify=True)` (in `lib2spy.native_pkgstream`) embeds the verify report under a `"verify"` key in the analyzer's output for downstream JSON pipelines.
 
-> The earlier `binwalker pkgstream-verify` subcommand has been retired; `python -m lib2spy` is a strict superset.
+> The earlier pkgstream verify subcommand has been retired; `python -m lib2spy` is the supported entry point.
 
 ### 9.10 Live-fire findings — install state machine, SCRIPT bytecode, trust store
 
@@ -710,7 +710,7 @@ Trust gates (`lib2sp_check_data`, CMDB **`trust_engcert`**, signer CN pin, ANY-o
 **What `lib2sp` does *not* do:** it does **not** call `mount(2)` on SquashFS superblocks found by magic. Typical outcomes are:
 
 - **FILE TLV installs a SquashFS blob** to an absolute path (e.g. a partition image or staging file) with mode bits taken from the TLV when present — then **other** userland or init scripts flash/mount it per product flow.
-- **Analysis hosts** carve the same byte ranges (`python -m binwalker pkgstream-slices`, [`tools.md`](tools.md) *Pkgstream slices*) and run **`unsquashfs`** or **dissect.squashfs** on each slice — that is **offline** corpus work, not `lib2sp` behavior.
+- **Analysis hosts** consume the same byte ranges through `lib2spy.iter_pkgstream_artifacts()` and run **dissect.squashfs** inside `corpus` — that is **offline** corpus work, not `lib2sp` behavior.
 
 **Integrity:** SquashFS internal xz/CRC and uImage **`ih_*crc`** are **corruption** checks at extraction/boot time (§9.1 table); they are **orthogonal** to the CMS + per-TLV digest story unless a carrier explicitly ships those bytes as a **FILE** payload covered by a FILE digest.
 

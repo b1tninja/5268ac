@@ -38,7 +38,7 @@ Offline reverse-engineering notes for Pace **5268AC-class** firmware, OpenTL NAN
 
 | Doc | Topic |
 |-----|--------|
-| [tools.md](tools.md) | binwalker, tl-bbm, nand-translate, vmlinux-to-elf |
+| [tools.md](tools.md) | corpus indexing, lib2spy, paceflash, uImage, vmlinux-to-elf |
 | [010editor/README.md](010editor/README.md) | Binary templates for NAND / pkgstream |
 
 ## Ghidra MCP exports (lib2sp)

@@ -8,7 +8,7 @@ Official updates often ship as **`.pkgstream`** / install packages; this repo ma
 
 ## Carrier firmware index (`pkgstreams`)
 
-The file **[`pkgstreams`](pkgstreams)** is a **plain-text catalog** of paths on AT&T’s historical gateway CDN **`gateway.c01.sbcglobal.net`**: **one logical URL per line**, without an `http://` or `https://` prefix (scripts and **[`binwalker/resolver.py`](binwalker/resolver.py)** prepend **`https://`** when downloading).
+The file **[`pkgstreams`](pkgstreams)** is a **plain-text catalog** of paths on AT&T’s historical gateway CDN **`gateway.c01.sbcglobal.net`**: **one logical URL per line**, without an `http://` or `https://` prefix.
 
 **S3 backend:** objects live in bucket **`ecouverseprodeast-firmware`** (account `601471275036`), served via **CloudFront** `d3s4wzxismc942.cloudfront.net`. **`s3:ListBucket` is denied** for anonymous callers and for IAM user **`vcdn`**; **GET of known keys via the gateway hostname still works**. See **[`gateway_s3_bucket.md`](gateway_s3_bucket.md)**.
 
@@ -29,7 +29,7 @@ https://gateway.c01.sbcglobal.net/firmware/{device_code}/{release_dir}/…/<arti
 
 **Quirk:** a few scraped lines split the URL with a **space** after **`device_code/`** (e.g. `…/00D09E/ 10.5.3…`); remove the space before requesting the object.
 
-**Tooling:** use **`python -m binwalker analyze <flash>`** (or **`scan`** / **`mtd-scan`**) to tie **dump-derived version strings** to **`pkgstreams`** URLs via **[`BinWalkerAnalyzer`](binwalker/analyzer.py)** / **[`URLResolver`](binwalker/resolver.py)**. **`python -m binwalker download`** / **`download-all`** were **removed** from the binwalker CLI — acquire artifacts manually under **`firmware_*`** and verify **`.pkgstream`** with **`python -m lib2spy.pkgstream`**. Root **`firmware_downloader.py`** remains a thin shim over **`binwalker.downloader`** for old scripts only.
+**Tooling:** acquire artifacts manually under **`firmware_*`**, verify **`.pkgstream`** with **`python -m lib2spy.pkgstream`**, and index carriers / flash dumps with **`python -m corpus --build-index --pkgstream ...`** or **`--flash ...`**.
 
 ## Downloaded carrier bundle (`firmware_11.5.1.532678/`)
 
@@ -145,7 +145,7 @@ The file **`fwupgrade.txt`** is a single **captive serial capture** (userspace s
 ### Stack: raw NAND → MTD → OpenTL → TL slices
 
 1. **`mtdparts=mtd-0:524288(loader),1048576(mtdoops),-(tlpart)`** appears as U-Boot “Fixed up MTD partition” and again on the **Kernel command line** with **`cmdlinepart`** / printk ranges matching **`loader` / `mtdoops` / `tlpart`**.
-2. **`tlpart`** is mapped from **`0x00180000`** to the end of flash (the large MTD slice **`binwalker`** parses as **tlpart**).
+2. **`tlpart`** is mapped from **`0x00180000`** to the end of flash (the large MTD slice **`boardfs.flash_layout`** parses as **tlpart**).
 3. **OpenTL** mounts **`tlpart`** as a TL disk. U-Boot **`nflaattach`** (**`fwupgrade.txt`** ~223) reports **`pages per unit=64 shift=17 sectors_per_page=4`** → **one TL unit = one 128 KiB erase block** = **256 × 512-byte sectors**. **`TL_debug`** / **`nand_geom`** (**~224–231**) show **~1012 raw virtual blocks**, **30** reserved for **bad blocks**, **1** **stats** block → **982** blocks usable, **`cap=0x0003D4FC (251132)`** sectors, **`cyl=980 nhead=16 nsectors=16`**. Kernel **`tldisk_partition`** / **`parse_bsd`** (**~490–505**) parses the **tldisk header** and emits four **`parse_bsd: Partition …`** lines matching U-Boot’s disklabel probe (**~236–240**):
    - **`8`/`80`**, type **`0x1d`** → **`opentla1`** env primary  
    - **`88`/`80`**, type **`0x1d`** → **`opentla2`** env backup  
@@ -167,11 +167,11 @@ Interpreting OpenTL inside **`tlpart`** for offline dumps (dump layout, BBM, dis
 
 ### uImage header (`ih_*`) and 010 Editor templates
 
-Carved **`uImage`** blobs (from **`tlpart`**, **`.pkgstream`**, or Binwalk **`carve`**) begin with U-Boot’s legacy **`image_header`** (**64 bytes**, big-endian fields): magic **`IH_MAGIC`** **`0x27051956`** (bytes **`27 05 19 56`**), **`ih_os` / `ih_arch` / `ih_type` / `ih_comp`**, **`ih_size`**, load/entry/CRCs, and a NUL-terminated **`ih_name`** (32 bytes). The string **`Install image (5268/att)`** in Binwalk output is exactly **`ih_name`** on this family.
+Carved **`uImage`** blobs (from **`tlpart`**, **`.pkgstream`**, or signature scans) begin with U-Boot’s legacy **`image_header`** (**64 bytes**, big-endian fields): magic **`IH_MAGIC`** **`0x27051956`** (bytes **`27 05 19 56`**), **`ih_os` / `ih_arch` / `ih_type` / `ih_comp`**, **`ih_size`**, load/entry/CRCs, and a NUL-terminated **`ih_name`** (32 bytes). The string **`Install image (5268/att)`** is exactly **`ih_name`** on this family.
 
 SweetScape **`OpenWRT-BIN.bt`** declares the same **ID bytes `27 05 19 56`** so it aligns with the **start of a legacy uImage**; that template also scans for optional **SquashFS** (`hsqs`) and **`DEADC0DE`** tails. **Kernel-only** carves (no embedded rootfs in the same file) will not exercise those branches—use a dedicated uImage view or **`dumpimage`** for **multi-file** payloads.
 
-**In-repo tooling:** **`python -m binwalker uimage-header <file> [--offset N]`** prints decoded **`ih_*`** fields; **`carve`** writes **`carve_summary.md`** with a **Legacy uImage headers (parsed)** section when **`uimage`** hits exist (see **[`binwalker/README.md`](binwalker/README.md)**).
+**In-repo tooling:** use **`uboot.uimage.parse_uimage_header()`** and **`uboot.uimage.extract_kernel_blob()`** for decoded **`ih_*`** fields and legacy MULTI member extraction.
 
 ### Filesystems and upgrade behavior
 
@@ -180,7 +180,7 @@ SweetScape **`OpenWRT-BIN.bt`** declares the same **ID bytes `27 05 19 56`** so 
 - Running system (pre-reboot) touched **`/rwdata/sys2/version.txt`**, **`pkg_util_set_pkgmgr_pkg_state`**, **Deferred upgrade file download successful**—writable **`/rwdata`** and package manager state **alongside** **`tlpart`**-resident layout.
 - During install: **`mtdoops is mtd1; clearing old logs`**—**`mtdoops`** is **MTD partition 1**, scrubbed as flash is rewritten.
 
-For automated string correlation on a **`.BIN`**, use **`python -m binwalker full-scan`** — see **[tools.md](tools.md)**; this log is the human-readable **ground truth** for how the same strings line up during a real **reboot-for-upgrade**.
+For automated string correlation on a **`.BIN`**, use **`python -m corpus --build-index --flash ...`** — see **[tools.md](tools.md)**; this log is the human-readable **ground truth** for how the same strings line up during a real **reboot-for-upgrade**.
 
 ## Kernel ELF Ghidra (5268 install package carve)
 

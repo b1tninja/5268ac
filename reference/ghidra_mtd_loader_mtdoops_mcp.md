@@ -21,7 +21,7 @@ Always pass **`program=`** on MCP calls when multiple binaries are open.
 | **mtdoops** | `0x80000` | 1 MiB | mtd1 | **`mtdoops` kernel driver** (panic ring) |
 | **tlpart** | `0x180000` | remainder | mtd2 | **OpenTL** only (`opentl_add_mtd`) |
 
-**Offline:** carve with `python -m binwalker partition-map … --extract` on a **logical-plane** view (or raw dump when offsets match). See [`tools.md`](tools.md).
+**Offline:** build a `boardfs.flash_layout.FlashImage` on a **logical-plane** view (or raw dump when offsets match), then read `loader` / `mtdoops` partitions. See [`tools.md`](tools.md).
 
 ```mermaid
 flowchart LR
@@ -146,7 +146,7 @@ Extracted from **`PACE 5268AC S34ML01G1@TSOP48.BIN`** → `output/mtd_parts_prob
 ## Offline tooling
 
 - **`python -m paceflash ls --probe-loader-env --probe-mtdoops`** — [`paceflash/mtd_partition_probes.py`](../paceflash/mtd_partition_probes.py); JSON **`mtd_partition_probes`**.
-- **Carve:** `python -m binwalker partition-map "PACE …BIN" --mtdparts "mtd-0:524288(loader),1048576(mtdoops),-(tlpart)" --extract output/mtd_parts_probe`
+- **Carve:** use `boardfs.flash_layout.build_partitions_from_mtdparts(...)` and `FlashImage.extract_partition(...)` with `mtd-0:524288(loader),1048576(mtdoops),-(tlpart)`.
 
 ---
 

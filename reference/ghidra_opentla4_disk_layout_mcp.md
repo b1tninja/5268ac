@@ -13,7 +13,7 @@
 
 | Space | Meaning | Typical offline handle |
 |-------|---------|-------------------------|
-| **A — Raw NAND / `tlpart` linear** | Bytes or erase units on the MTD partition backing OpenTL | `tlpart.bin`, `nand_translate`, binwalker logical+OOB |
+| **A — Raw NAND / `tlpart` linear** | Bytes or erase units on the MTD partition backing OpenTL | `tlpart.bin`, `nand_translate`, logical+OOB |
 | **B — OpenTL virtual volume** | **`~982` virt blocks × 128 KiB**, **`ntl_*`** page index, **`*(remap+8)`** 8-byte virt entries | `BlockMapBuild`, `extract_virtual_disk_bytes`, BBM replay |
 | **C — Disklabel child (`opentla4`)** | **512 B sector** stream relative to **BSD partition** start (**~`0x180`** sectors on class captures — see `open_tl.py` comments) | `opentl/tldisk.py`, `extract_opentla4` |
 

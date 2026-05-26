@@ -4,7 +4,7 @@ This document records **reverse-engineering findings** from Ghidra on the **`dri
 
 **Related:** **[issue.md](issue.md)** (strategy, BBM tooling), **[opentl.md](opentl.md)** (boot/U-Boot layout, **`opentla*`** diagrams), **[prom_init_ghidra.md](prom_init_ghidra.md)** (BCM63xx **`prom_init`** before **`opentl_add_mtd`**), **[tools.md](tools.md)** (`tl-bbm`, `tl-extract`, `vmlinux-to-elf`), **[ghidra_tldisk_partition.md](ghidra_tldisk_partition.md)** (`tldisk_partition` / `parse_bsd` listing), **[boardfs.md](boardfs.md)** (offline MTD + TL + UBI hints), **[paceflash.md](paceflash.md)** (`/etc/fstab` via **`paceflash.fstab`**), **[kernel_python_regions.md](kernel_python_regions.md)** (Python `#region kernel: 0x…` ↔ these addresses).
 
-**Notebook refresh (May 2026):** **§2–§11** use **kernel symbol names** from **`kallsyms`** (see **`binwalker/scripts/kallsyms_replace_fun_in_md.py`** to regenerate). **`extract_ghidra_fun.py`** / **`.bin.c`** exports may still show **`FUN_8028…`** until re-exported from Ghidra with applied symbols.
+**Notebook refresh (May 2026):** **§2–§11** use **kernel symbol names** from **`kallsyms`**. **`extract_ghidra_fun.py`** / **`.bin.c`** exports may still show **`FUN_8028…`** until re-exported from Ghidra with applied symbols.
 
 ---
 
@@ -18,7 +18,7 @@ For **new** Ghidra databases on this kernel, prefer the **reconstructed ELF** ov
 | **`…_ghidra_m00_kernel.kallsyms.txt`** | `nm`-style symbol listing (~515 KB) for grep / cross-reference. |
 | **`…_ghidra_m00_kernel.elf.md`** | Per-carve summary: kallsyms field offsets, ELF section layout, reproduction commands. |
 
-**Loading:** drop the `.elf` straight into Ghidra — `e_machine=MIPS`, segments, and entry come directly from the ELF, and the import populates the function listing with kernel-side names (`do_one_initcall`, `_stext`, `kernel_entry`, etc.) before any analysis runs. No manual base-address or entry-point setup, no `ghidra_load.json` plumbing for the **kernel** member. Continue to use the existing `binwalker uimage-ghidra` manifest for the **ramdisk** member at `0x80A9A000` (it is not a kernel and has no `kallsyms`).
+**Loading:** drop the `.elf` straight into Ghidra — `e_machine=MIPS`, segments, and entry come directly from the ELF, and the import populates the function listing with kernel-side names (`do_one_initcall`, `_stext`, `kernel_entry`, etc.) before any analysis runs. No manual base-address or entry-point setup is needed for the **kernel** member. Use `uboot.uimage` metadata when manually placing non-kernel members such as the ramdisk at `0x80A9A000`.
 
 **Existing analyses keyed off the static `.bin.c` export and `FUN_8028…` addresses still apply** — `_ghidra_m00_kernel.bin` and the **`vmlinux-to-elf`** ELF cover the **same load image** at the same KSEG0 addresses; only the symbol surface has improved. Names recorded throughout this document (e.g. `kernel_entry`, `_stext`, …) can now be cross-checked against the `.kallsyms.txt` listing without round-tripping through Ghidra. See **[tools.md](tools.md)** § *`vmlinux-to-elf` — kernel symbol recovery for Ghidra/IDA* for installation, the auxiliary `kallsyms-finder` / `vmlinuz-decompressor` commands, and override flags.
 
@@ -146,7 +146,7 @@ Decompilation targets **`att-5268-11.5.1.532678_prod_lightspeed-install_uimage_0
 2. **`opentl_getgeo` CHS** — reporting only; **do not** derive BBM from geometry fields.  
 3. **ECC** — relevant when emulating **bit errors** or validating captured OOB; **not** required for a **clean** TSOP dump linearized by **virt→phys**.  
 4. **`opentl_ioctl` / `process_map`** — why **partition-relative** sector bases differ from **whole-TL** BBM when correlating **`opentla4`** slices.  
-5. **Flat dump layout** — **`opentl_dev_*`** addressing matches **standard MTD NAND** (block/page/OOB); **`binwalker`** **logical prefix + OOB tail** model should stay consistent with **`writesize`** / spare size from **`opentl_add_mtd`**.
+5. **Flat dump layout** — **`opentl_dev_*`** addressing matches **standard MTD NAND** (block/page/OOB); the **logical prefix + OOB tail** model should stay consistent with **`writesize`** / spare size from **`opentl_add_mtd`**.
 
 ---
 
@@ -193,7 +193,7 @@ Printks (**`ntl_read_page: virtual_block=%d`**, **`ntl_acc_page`**, etc.) anchor
 
 **After mapping:** **`ntl_put_chain_in_array`** fills the **chain array**. A loop calls **`ntl_find_phy`** to select the **next physical unit** / spare metadata for this **virtual block + logical page**, then **`ntl_verify_read_phy_page`** performs the **data** read and verify. On verify failure, **`ntl_find_phy`** advances to the **next chain candidate** for the **same** virt page; when candidates are exhausted without success, the kernel **zero-fills** the page buffer (same observable outcome as a hole for data bytes). Pseudocode and contrast with offline **`extract_virtual_disk_bytes`**: [ghidra_boardfs_bbm_readpath.md](ghidra_boardfs_bbm_readpath.md) (`ntl_read_page`: verify loop and chain exhaustion). Details: **§7.3**.
 
-**Offline implication:** **`binwalker tl-bbm`** / **`tl-mount`** target **`ntl_mount`** / **`*(remap+8)`** replay only: at minimum a **`uint32 phys`** per virt block; ideally **chain length** + **follow-up phys IDs** (§6). A phased design for **`ntl_find_phy` + verify** offline lives in [ghidra_boardfs_bbm_readpath.md](ghidra_boardfs_bbm_readpath.md) (**Offline parity roadmap**).
+**Offline implication:** **`tl-mount`** targets **`ntl_mount`** / **`*(remap+8)`** replay only: at minimum a **`uint32 phys`** per virt block; ideally **chain length** + **follow-up phys IDs** (§6). A phased design for **`ntl_find_phy` + verify** offline lives in [ghidra_boardfs_bbm_readpath.md](ghidra_boardfs_bbm_readpath.md) (**Offline parity roadmap**).
 
 **Ghidra MCP (May 2026, program `att-5268-…-kernel.elf`):** **`ntl_lookup_page_map`** @ **`0x80285248`** assigns **`*out = 0xffffffff`** (**`out[1] = 0xffff`**) when the per-page bitmap shows the slot unpopulated — i.e. the same **hole** sentinel as the **8-byte virt table** before any NAND data read, matching the offline zero-fill rule in **`opentl.open_tl`**.
 
@@ -838,7 +838,7 @@ Userspace write (e.g. UBIFS / ext4 on OpenTL child, or loop-mounted squash file)
 - **[ghidra_upgrade_write_path_532678.md](ghidra_upgrade_write_path_532678.md)** — **`libpkg_client`/`lib2sp`** Ghidra checklist + **`532678`** kernel string anchors (**squashfs**, **`OPENTL`** write printk).
 - **[fwupgrade.txt](fwupgrade.txt)** — **`tlpart`**, **`cap=0x0003D4FC`**, BBM/stats printks.
 - **[flash strings.txt](flash%20strings.txt)** — `OPENTL:`, `ntl_`, `opentl_dev_`, `opentl_map.c`.
-- **`opentl/tl_bbm.py`** — current map schemas (**`binwalker_tl_bbm_v1`**).
+- **`opentl/tl_bbm.py`** — current map schemas (**`opentl_tl_bbm_v1`**).
 - **[`opentl_stats_block_layout.md`](opentl_stats_block_layout.md)** — stats persist / virtual tail (**`ntl_load_stat_table`**, **`ntl_flush_table`**); Python **`opentl/stats_block.py`**.
 - **Reconstructed kernel ELF (`vmlinux-to-elf`)** — **§0**:
   - **[`…_ghidra_m00_kernel.elf`](firmware_11.5.1.532678/11.5.1.532678/install_package/pkgstream_carves/att-5268-11.5.1.532678_prod_lightspeed-install_uimage_0x01ae4b7e_36645b10_ghidra_m00_kernel.elf)** — preferred Ghidra/IDA input.
@@ -849,4 +849,4 @@ Userspace write (e.g. UBIFS / ext4 on OpenTL child, or loop-mounted squash file)
 
 ---
 
-*Document synthesized from chat RE notes (May 2026). §7.3–§7.12 cover read/find spare, ECC, write/verify, allocate, fold chain, page-map cache; **`ntl_compute_spare_xsum`** checksum formula §7.4a. §11: **`opentl_add_mtd` / `add_mtd_blktrans_dev` / `ntl_mount`** attach layout (`ghidra-vmlinux-extract`); §11.4 ties **`tl_init_chain`** headers to **`0x15010` / `0x15080`** byte offsets via **`ntl_log_all`**; §11.5 **`tl_delete_chain`** / **`ntl_verify_chain_seqnum`**; §11.3 optional Ghidra renames + **`ntl_mount`** pool map; §11.6 **`ntl_allocate_unit`** vs **`tl_log_chain`**. §12: Linux MTD OOB sysfs / concat / partition / **`mtdchar`** / **`brcmnand`** / **`opentl`** (`batch_decompile`). Function IDs bulk-updated from **`…kallsyms.txt`** via **`binwalker/scripts/kallsyms_replace_fun_in_md.py`**. Update as spare-chain layout is confirmed.*
+*Document synthesized from chat RE notes (May 2026). §7.3–§7.12 cover read/find spare, ECC, write/verify, allocate, fold chain, page-map cache; **`ntl_compute_spare_xsum`** checksum formula §7.4a. §11: **`opentl_add_mtd` / `add_mtd_blktrans_dev` / `ntl_mount`** attach layout (`ghidra-vmlinux-extract`); §11.4 ties **`tl_init_chain`** headers to **`0x15010` / `0x15080`** byte offsets via **`ntl_log_all`**; §11.5 **`tl_delete_chain`** / **`ntl_verify_chain_seqnum`**; §11.3 optional Ghidra renames + **`ntl_mount`** pool map; §11.6 **`ntl_allocate_unit`** vs **`tl_log_chain`**. §12: Linux MTD OOB sysfs / concat / partition / **`mtdchar`** / **`brcmnand`** / **`opentl`** (`batch_decompile`). Update as spare-chain layout is confirmed.*

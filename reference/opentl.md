@@ -99,7 +99,7 @@ Early **kernel PROM** path (**`prom_init`**) that seeds **default `mtdparts=` / 
 | **Capacity line** | Strong | **`cap=0x0003D4FC` (251132)** sectors and **`nand_geom: cap=… cyl=… nhead=… nsectors=…`** in U-Boot; kernel prints **`tldisk_partition: cap: 0x0003D4FC (251132)`**. |
 | **BSD disklabel on `opentla0`** | Strong | Kernel **`parse_bsd`** lines list four partitions; types **`0x1d`** (env), **`0x1c`**, **`0x11`** (BSD **FS_EX2FS** = ext family). |
 | **`opentla4` = ext2** | Strong | **`e2fsck /dev/opentla4`** in captured logs; directory listings include **`sys1`**, **`pkg`**, **`config`**, etc. |
-| **Virt→phys remap table** | Partial | Kernel **tail stats** window + magic triple documented (**[`opentl_stats_block_layout.md`](opentl_stats_block_layout.md)**); full per-virt map needs **`ntl_mount`** / **`*(remap+8)`** replay (**`opentl.bbm_kernel_replay`**, stub). **`binwalker tl-bbm`** invokes that replay only (no legacy identity CLI). |
+| **Virt→phys remap table** | Partial | Kernel **tail stats** window + magic triple documented (**[`opentl_stats_block_layout.md`](opentl_stats_block_layout.md)**); full per-virt map needs **`ntl_mount`** / **`*(remap+8)`** replay (**`opentl.bbm_kernel_replay`**, stub). |
 
 ---
 
@@ -209,7 +209,7 @@ flowchart LR
 | **`tl checkfstype` implementation** | Defines exact meaning of **`7`** vs **`11`** and any other codes; bounds when UFS vs ext2 paths run. |
 | **UFS-on-partition-5 behavior** | If UFS is still used on some builds, **UFS superblock** location and TL mapping for that mode need documentation. |
 | **`opentla3` (type `0x1c`)** | Small partition; purpose unclear from strings alone. |
-| **Env CRC algorithm / field layout** | **`CRC=972f0f3`** is a stable fingerprint per build (see **`fwupgrade.txt`** / serial logs); confirm against bytes at the known env partition offset in the dump rather than blind full-image string scans. **Bounded** parse in [`uboot/env.py`](../uboot/env.py): `parse_uboot_env_v1` (CRC + NUL-split pairs, then `get_mtdparts_token` / `get_mtdparts_token_from_env_blob` from [`uboot/cmdline.py`](../uboot/cmdline.py)) and `read_uboot_env_v1_file` for a fixed file slice. **`binwalker partition-map`** / **`carve`** call [`binwalker/extract/flash_layout.py`](../binwalker/extract/flash_layout.py) **`try_mtdparts_from_uboot_env`** first (logical reads via **`unand.layout.read_logical_plane_interval`**) to recover real **`mtdparts`** before **`mtd-scan`**. |
+| **Env CRC algorithm / field layout** | **`CRC=972f0f3`** is a stable fingerprint per build (see **`fwupgrade.txt`** / serial logs); confirm against bytes at the known env partition offset in the dump rather than blind full-image string scans. **Bounded** parse in [`uboot/env.py`](../uboot/env.py): `parse_uboot_env_v1` (CRC + NUL-split pairs, then `get_mtdparts_token` / `get_mtdparts_token_from_env_blob` from [`uboot/cmdline.py`](../uboot/cmdline.py)) and `read_uboot_env_v1_file` for a fixed file slice. **`boardfs.flash_layout.try_mtdparts_from_uboot_env`** can recover real **`mtdparts`** before an MTD string scan. |
 | **`opentl_map.c` translation** | Filename appears in U-Boot strings — likely central to **sector → NAND page** mapping. |
 
 ---

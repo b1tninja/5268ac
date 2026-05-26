@@ -84,7 +84,7 @@ After **`ntl_read_verify_phy_spare`**, the kernel parses **next physical erase u
 ## What actually fixes **virt→phys** when spare is thin
 
 - **On-flash stats table** (`ntl_load_stat_table` family) — **`opentl/stats_block.py`** + **`tl-mount --dump-stats-candidates`**.
-- **8-byte remap table** from **`ntl_read_page`** / RAM dump / `binwalker_tl_bbm_v1` — not the same as “decode every spare”.
+- **8-byte remap table** from **`ntl_read_page`** / RAM dump / `opentl_tl_bbm_v1` — not the same as “decode every spare”.
 - **Spare all-pages inference** fills **virt slots** where **`ntl_find_phy`**-style tags exist; **`chain_v1`** only changes **collision tie-break**, not field definitions.
 
 If spare is mostly **erased (`0xFF`)** or **un-tagged**, spare-driven **virt→phys** stays incomplete — that is a **signal** problem, not a wrong byte-offset table.

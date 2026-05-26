@@ -1,6 +1,6 @@
 # `boardfs` — MTD, TL disklabel, UBI hints
 
-Python package at repo root: **`boardfs/`**. It chains **MTD** layout (**`mtdparts`**) with **OpenTL TL disklabel** slices (**`opentl.tldisk`**) and optional **filesystem** helpers. It does **not** replace **`binwalker`** carving; it complements **[boot_and_storage.md](boot_and_storage.md)** for scripted offline workflows.
+Python package at repo root: **`boardfs/`**. It chains **MTD** layout (**`mtdparts`**) with **OpenTL TL disklabel** slices (**`opentl.tldisk`**) and optional **filesystem** helpers. It complements **[boot_and_storage.md](boot_and_storage.md)** for scripted offline workflows.
 
 **BBM / spare vs linear `mtdparts` bytes:** The kernel’s **`parse_bsd`** reads **512-byte logical sectors** through **`read_dev_sector`** (page cache → **`ntl_read_page`** BBM remap), **not** by grepping the linear plane for a contiguous printk tuple chain — see **[ghidra_parse_bsd_disklabel_layout.md](ghidra_parse_bsd_disklabel_layout.md)**. Offline, **`opentl.tldisk.parse_bsd_disklabel_sector`** mirrors the **`FUN_8020ec1c`** layout; **`enumerate_tlpart_tl`** prefers the **BBM virtual** stream when it has a disklabel anchor, otherwise **linear ``tlpart``** when the virtual head is zeroed but linear still has **`bsd_magic`** / valid sectors ([`FsRegistry._tlpart_enumeration_bytes_and_source`](D:/electronics/5268ac/boardfs/registry.py)). **Identity** linear **`block_dev_for_tl_slice`** offsets can still disagree with **virtual** slice payloads when the primary BBM map is wrong — use chain-aware assembly (**`paceflash --bbm-chain-aware`** or automatic inference in **`paceflash.inventory`**).
 
@@ -30,7 +30,7 @@ End-to-end stack (`unand` → `uboot` → `opentl` → `boardfs` → `paceflash`
 
 | Layer | Module(s) | Role |
 |-------|-----------|------|
-| A | `boardfs.flash`, `binwalker.extract.flash_layout.FlashImage` | `mtdparts` → byte offsets in a logical flash file (on-disk path or **`FlashImage.logical_image`** bytes from **`flash_image_from_cmdline_bytes`**) |
+| A | `boardfs.flash`, `boardfs.flash_layout.FlashImage` | `mtdparts` → byte offsets in a logical flash file (on-disk path or **`FlashImage.logical_image`** bytes from **`flash_image_from_cmdline_bytes`**) |
 | B | `opentl.tldisk`, `opentl.logical_opentl_session`, `opentl.driver` | ``tlpart`` MTD bytes → ``opentla0``… via :func:`opentl.tldisk.enumerate_tl_slices_from_tlpart_mtd_bytes`; with BBM :class:`boardfs.registry.FsRegistry` holds :class:`~opentl.logical_opentl_session.LogicalOpenTLSession` — virtual scan via :meth:`~opentl.logical_opentl_session.LogicalOpenTLSession.virtual_tl_byte_stream`, assembled slices via :meth:`~opentl.logical_opentl_session.LogicalOpenTLSession.extract_virtual_disk_bytes`. |
 | C | `boardfs.ubi_cmdline`, `boardfs.ubi_scan` | **`ubi.mtd=`** → backing **MTD** `BlockDev`; **VID** header scan (not named volume table) |
 | D | `boardfs.squashfs_probe` | **`hsqs`** magic probe on a :class:`boardfs.block.BlockSlice` (``BlockDev`` or ``AssembledBlockDev``); reads four bytes without materializing the full slice for path-backed ``BlockDev`` |
@@ -71,7 +71,7 @@ from boardfs import (
 
 - **`iter_ubi_mtd_attach_specs(cmdline)`** — every **`ubi.mtd=`** token. Optional second comma field = byte offset inside the MTD partition (kernel attachment form).
 - **`FsRegistry.first_ubi_backing_block_dev()`** / **`block_dev_for_ubi_mtd_attach(spec)`** — map attachment to raw **MTD** bytes (what UBI attaches **before** volume decode).
-- **`scan_ubi_vid_headers_in_bytes` / `scan_ubi_vid_headers_on_block_dev`** — collect plausible **`struct ubi_vid_hdr`** records via **`binwalker.ubi_carve`** ( **`UBI#`** + **`UBI!`** on erase-aligned PEBs). This is a **PEB VID hit list**, not **`ubinfo`**-style volume names. For decode/carve, see **`binwalker.ubi_carve`** and **`binwalker.extract.ubifs_decode`** in **[tools.md](tools.md)**.
+- **`scan_ubi_vid_headers_in_bytes` / `scan_ubi_vid_headers_on_block_dev`** — collect plausible **`struct ubi_vid_hdr`** records via **`boardfs.ubi_carve`** ( **`UBI#`** + **`UBI!`** on erase-aligned PEBs). This is a **PEB VID hit list**, not **`ubinfo`**-style volume names. For decode/carve, see **`boardfs.ubi_carve`** and **`boardfs.ubifs_decode`** in **[tools.md](tools.md)**.
 
 **`root=ubi0:rootfs`:** **`parse_root_from_cmdline`** returns **`kind="ubi"`**, **`index`** = UBI device, **`ubi_volume`** = volume name. Resolving that to a byte range requires **UBI/UBIFS** stack tooling (out of scope for raw `boardfs` slices).
 
