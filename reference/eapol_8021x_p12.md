@@ -2,7 +2,7 @@
 
 Firmware slice: **11.5.1.532678** (ATT Lightspeed / 5268AC). Evidence: Ghidra **`/usr/bin/lmd`**, **`/usr/lib/librgw_compat.so`**, **`/usr/lib/libboard.so`**, CMDB XML in flash strings, **`att_unified_eapol-certs.pkgstream`**, NAND dump + **`paceflash dump-eapol-cert`**.
 
-Related: [`paceflash.md`](paceflash.md) (offline extract/decrypt), [`libboard.md`](libboard.md) (`board_param_*`), [`board_params_nand.md`](board_params_nand.md) (factory `devkey` / `sn`), [`firmware.md`](firmware.md) (carrier pkg layout), [`httpd_endpoints.md`](httpd_endpoints.md) (`EAPOL_FAILED`).
+Related: [`paceflash.md`](paceflash.md) (offline extract/decrypt), [`linux_8021x_lightspeed.md`](linux_8021x_lightspeed.md) (systemd-networkd + wpa_supplicant), [`libboard.md`](libboard.md) (`board_param_*`), [`board_params_nand.md`](board_params_nand.md) (factory `devkey` / `sn`), [`firmware.md`](firmware.md) (carrier pkg layout), [`httpd_endpoints.md`](httpd_endpoints.md) (`EAPOL_FAILED`).
 
 ---
 
@@ -101,7 +101,7 @@ From CMDB XML blobs in flash:
 |-------------|-----------|--------|
 | Bridge row | **`pm_bb_bridge`** | **`dsl0`** + **`eth4`** (WAN broadband path) |
 | EAPOL module (type **26**) | **`eapol0`** (usrname) | Child of bridge; params include **`eap pkcs12` = `lightspeed`**, **`eap authreqd` = 1**, timers |
-| DHCP on WAN | **`pm_bb_eapol`** | Child of bridge; **`dhcpc clientid` = `00D09E-<serial>`** |
+| DHCP on WAN | **`pm_bb_eapol`** / **`pm_bb_dhcpc`** | CMDB **`dhcpc clientid` = `00D09E-<serial>`** (see [DHCP client identifier](#dhcp-client-identifier-lmd)) |
 
 Default EAPOL parameters (representative):
 
@@ -115,42 +115,73 @@ Default EAPOL parameters (representative):
 
 Pkg lock **`lightspeed-prod-802_1X`** in CMDB correlates with production CA path above.
 
-### Code path (Ghidra)
+### Code path (Ghidra MCP verified — 532678 `/usr/bin/lmd`)
 
 ```mermaid
 sequenceDiagram
-  participant CM as CMDB / modprov
-  participant LMD as lmd eapol0
+  participant CM as CMDB_modprov
+  participant SetCfg as eapol_setcfg
+  participant Open as eapol_open_device
+  participant Cfg as eapol_config
+  participant SM as eapol_sm
+  participant EAP as eap_tls_ssl_init
+  participant TLS as tls_connection_private_key
+  participant P12 as tls_read_pkcs12
   participant ULIB as librgw_compat
-  participant BOARD as libboard board_param
-  participant SSL as OpenSSL EAP-TLS
-  participant WAN as dsl0 parent if
+  participant BOARD as board_param
 
-  CM->>LMD: eap pkcs12=lightspeed, authreqd=1
-  LMD->>LMD: eapol_up / eapol_open_device
-  Note over LMD,WAN: AF_PACKET 0x888e on parent ifindex
-  LMD->>LMD: eapol_config
-  LMD->>ULIB: librgw_sec_get_shroud_key → password buffer
-  ULIB->>BOARD: devkey + salt + serial (same as board_key_pkcs12_password)
-  LMD->>ULIB: tw_ulib_sec_find_pkcs12("lightspeed")
-  ULIB->>BOARD: board_param_get "lightspeed_p12" (base64)
-  ULIB-->>LMD: PKCS12*
-  LMD->>SSL: tls_read_pkcs12 → SSL_CTX_use_certificate/key
-  SSL->>SSL: Verify server using /etc/pki/eapol/cacerts.pem
-  LMD->>WAN: EAPOL frames (eapol_sm_*, wpa_supplicant-derived sm)
+  CM->>SetCfg: eap pkcs12=lightspeed
+  SetCfg->>Open: parent BB if, PF_PACKET 0x888e
+  SetCfg->>Cfg: identity, shroud password, CA path
+  Cfg->>SM: eapol_sm_notify_config
+  SM->>EAP: EAP-TLS params
+  EAP->>TLS: tls_connection_private_key
+  TLS->>P12: after PEM file load fails
+  P12->>ULIB: tw_ulib_sec_find_pkcs12 lightspeed
+  ULIB->>BOARD: lightspeed_p12 base64
+  P12->>P12: PKCS12_parse, SSL_CTX_use_cert/key
 ```
 
-| Step | Function | Detail |
-|------|----------|--------|
-| 1 | **`eapol_setcfg`** | Reads **`eap pkcs12`**, **`eap authreqd`**, module bypass, timers from module param map |
-| 2 | **`eapol_open_device`** | Parent **`pm_bb_bridge`** → BB device; creates **`socket(PF_PACKET, 0x888e)`**; binds to **`eapol0`** ifname |
-| 3 | **`eapol_config`** | Builds EAP identity string from interface MAC; sets **`ts.pem`** path if present; **`librgw_sec_get_shroud_key`** fills **EAP TLS password** buffer |
-| 4 | **`tls_read_pkcs12`** | **`tw_ulib_sec_find_pkcs12(ctx, "lightspeed")`** → **`PKCS12_parse`** with password → install cert/key/extra CAs into **SSL_CTX** |
-| 5 | **`eapol_sm_*`** | WPA supplicant **EAPOL state machine** (`eapol_sm.c`); **`eapol_sm_rx_eapol`** processes frames |
+| Step | Function @ VA | Detail |
+|------|----------------|--------|
+| 1 | **`eapol_setcfg`** `0x00455554` | `lm_pub_get_str(..., "eap pkcs12", ctx+0x3dc, 0x20)` — rodata **`eap pkcs12`** @ `0x0049b318` |
+| 2 | **`eapol_open_device`** `0x00453c70` | `lm_get_parent_dev` → `socket(PF_PACKET, …, 0x888e)` + bind; copies HWaddr to ctx+0x20 |
+| 3 | **`eapol_config`** `0x00454228` | Default identity `snprintf(..., "%02X:%02X:…", MAC@+0x20)` @ `0x0049b28c`, or **`eap identity`** @ `0x0049b2d8`; **`librgw_sec_get_shroud_key`** → ctx+0x3fc`; **`/etc/pki/eapol/cacerts.pem`** @ `0x0049b2ac` if `stat` ok |
+| 4 | **`eap_tls_ssl_init`** `0x00458ff0` | `tls_connection_ca_cert` → `tls_connection_client_cert` → **`tls_connection_private_key`** `0x0045db7c` |
+| 5 | **`tls_read_pkcs12`** `0x0045cb60` | Called from **`tls_connection_private_key`** when `SSL_use_PrivateKey_file` fails; **`tw_ulib_sec_find_pkcs12(ctx, pkcs12_name)`** → **`PKCS12_parse`**, install cert/key/extra chain |
+| 6 | **`eapol_sm_*`** | wpa_supplicant-derived state machine (`eapol_sm.c` strings) |
 
-**`tw_ulib_sec_find_pkcs12`** (`librgw_compat` @ `0x000c3a1c`): opens board param DB, resolves **`{name}_p12`** (second argument is the string **`lightspeed`** from CMDB), base64-decodes into OpenSSL **`PKCS12`**.
+**Correction:** **`eapol_config` does not call `tls_read_pkcs12`.** PKCS#12 load happens later during **`eap_tls_ssl_init`** via **`tls_connection_private_key`**.
 
-**`librgw_sec_get_shroud_key`** (`0x000bf598`): derives the same **`devkey+salt+serial`** password string used for decryption (validates buffer size ≥ `strlen+0x29`).
+**EAPOL module context** (per-module block at `*(mod+0x254)`):
+
+| Offset | Field |
+|--------|--------|
+| `+0x3dc` | PKCS#12 logical name (32 B), e.g. `lightspeed` |
+| `+0x3fc` | PKCS#12 password (256 B), from shroud key |
+| `+0x6c` | Pointer to CA file path |
+| `+0xdc` | EAP identity buffer (256 B) |
+| `+0x20`…`+0x25` | WAN MAC bytes for default identity |
+
+**`tw_ulib_sec_find_pkcs12`** (`/usr/lib/librgw_compat.so.0.0.0` @ `0x000c3a1c`): `snprintf("%s_p12", name)` → **`board_param_get`** → base64 decode → **`d2i_PKCS12`**.
+
+**`librgw_sec_get_shroud_key`** @ `0x000bf598`: **`snprintf(buf, "%s%s%s", devkey, salt, serial)`** — same as **`board_key_pkcs12_password`** @ `0x00013edc` in **`libboard`**.
+
+### DHCP client identifier (`lmd`)
+
+CMDB (flash `cmlegacy`): **`dhcpc clientid`** = **`00D09E-38161N043704`** on **`pm_bb_eapol`** and **`pm_bb_dhcpc`**.
+
+| Step | Function @ VA | Detail |
+|------|----------------|--------|
+| Module config | **`dhcp_setcfg`** `0x0043f2cc` | Registers DHCP client via `lm_cfg_setcfg(..., dhcpc_recfginfo)`; rodata **`dhcpc clientid`** @ `0x004963e6` |
+| DISCOVER/REQUEST | **`dhcpc_gen_discover`** `0x00439bb0`, **`dhcpc_gen_request`** `0x004397f4` | If `*(dhcp_ctx+0x1f4) != 0` → **`lm_mdhcp_set_str_clientid`**; else **`lm_mdhcp_set_hwaddr_clientid`** |
+| Option 61 encoding | **`lm_mdhcp_set_str_clientid`** `0x0041a93c` | DHCP opt **`0x3d`**: length `strlen+1`, type byte **`0x00`**, ASCII payload (RFC 2132 string client-id) |
+| chaddr | same generators | **`lm_mdhcp_set_hwaddr`** on ctx+0x2c — **MAC**, independent of option 61 |
+| Vendor class | default | **`board_build_digits`** → **`"2WHPL %d.%d.%d"`** @ `0x004911b4` |
+
+**Packet capture:** option 61 should show type **`0x00`** then ASCII **`00D09E-{factory_sn}`** (not bare serial unless that is the full string). **chaddr** remains the WAN MAC.
+
+Linux mapping: [`linux_8021x_lightspeed.md`](linux_8021x_lightspeed.md) — **`paceflash gen-network-config`** emits EAP-TLS PKI, **`ClientIdentifier=00D09E-{sn}`**, **`MACAddress`**, and modem DHCP extras (vendor class **`2WHPL`**, param list, max message size).
 
 ### Trust vs identity
 
@@ -229,6 +260,7 @@ Lua helper: **`SSL_CTX*`** + table of extra **`X509*`** certs → **`SSL_CTX_ctr
 
 - Which manufacturing component **writes** `lightspeed_p12=` / `device_p12=` (CWMD? `modprov`? external ACS only).
 - Exact **on-disk path** for `board_param_open` (GP-relative table in `libboard` not fully string-resolved).
+- **`dhcpc_recfginfo`** ingest: CMDB **`dhcpc clientid`** → dhcp sub-context **`+0x1f4`** (callback registered from **`dhcp_setcfg`**; param loaded via link-manager cfg, not direct `lm_pub_get_str` in the functions decompiled above).
 - **Lua/CWMP** call sites that invoke **`get_net_cert("device")`** (bytecode / mapset scripts not in static strings).
 - **X.509 purpose diff** after decrypting **`device_p12`** (EE CN/serial/EKU vs lightspeed — same MAC-bound Foxconn-style EE is plausible but unverified here).
 - **`tw_ulib_rgc_get_pkcs12`** — whether any dynamic loader uses it on live units.
@@ -245,5 +277,7 @@ cmc -c get …                       # CMDB; look for pm_bb_bridge / eapol0 para
 # Offline
 python -m paceflash factory-params "PACE ….BIN"
 python -m paceflash dump-eapol-cert "PACE ….BIN" --cert lightspeed
+python -m paceflash gen-network-config "PACE ….BIN" --firmware-version "11.5.1.532678"
+# CA auto-resolves from att_unified_eapol-certs.pkgstream when extracted; see linux_8021x_lightspeed.md
 python -m lib2spy firmware_…/eapol_certs/att_unified_eapol-certs.pkgstream --extract ./tmp-eapol-ca
 ```

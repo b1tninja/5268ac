@@ -80,4 +80,5 @@ Exact on-device paths follow normal rootfs layout (`/usr/lib`, `/lib`).
 - [`output/page_inventory_att_532678.md`](output/page_inventory_att_532678.md) — **`PAGE`** tokens vs **`rewrite_conf.xml` / `hurl_conf.xml`** (generated)
 - [`output/web_admin_ghidra_correlation.md`](output/web_admin_ghidra_correlation.md) — full MCP session notes
 - [`security.md`](security.md) — attack surface summary
+- [`httpd_buffer_overflow_audit.md`](httpd_buffer_overflow_audit.md) — BOV triage + [`output/httpd_fuzz_targets_att532678.json`](../output/httpd_fuzz_targets_att532678.json)
 - [`cm_cmdb.md`](cm_cmdb.md) — configuration manager / CMDB (`cm_tran_*`, `cmdb_*`), shared-memory access, password storage vs UI squashfs

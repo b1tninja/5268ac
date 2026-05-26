@@ -6,6 +6,8 @@ It does **not** bypass carrier TLS, keycode bootstrap, or production `cwmp.c01.s
 
 See also: [`firmware_upgrade_process.md`](firmware_upgrade_process.md), [`cmdb_security.md`](cmdb_security.md), [`cwmp_cpe_authentication.md`](cwmp_cpe_authentication.md), [`firmware.md`](firmware.md).
 
+For **inbound BDC diagnostic pull** (HTTPS port **61001**, Basic auth, IPDR export), use **`bdcspy`** — [`bdc_diagnostic_pull.md`](bdc_diagnostic_pull.md).
+
 ---
 
 ## Install

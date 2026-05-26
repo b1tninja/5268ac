@@ -63,6 +63,8 @@ Summary from [`output/cmdb_security_inventory.md`](../output/cmdb_security_inven
 
 **`bdc` `pull_passwd`:** scoped to **BDC diagnostic pull** on port **61001**, not S3 or IoT topic URLs.
 
+**Lab pull client:** [`bdc_diagnostic_pull.md`](bdc_diagnostic_pull.md) and **`bdcspy`** (`python -m bdcspy identity|probe|pull`) — inbound HTTPS on **`pull_port`**, path `/bdc/{ProductClass}_{SerialNumber}` (Ghidra `cwmd`).
+
 ## Consumers — `bdc` chain
 
 Flash logs say **`acs: bdc started`**; firmware ships **`/usr/bin/cwmd`** (CWMP daemon) with embedded **BDC** module — logs prefix **`acs:`** while fault strings reference **`CWMD`**.

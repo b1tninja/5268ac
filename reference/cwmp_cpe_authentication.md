@@ -13,7 +13,7 @@ Related: [`board_params_nand.md`](board_params_nand.md), [`cmdb_security.md`](cm
 | **CPE → ACS** | HTTPS **POST** SOAP **Inform** (and session RPCs) | HTTP userinfo in URL + TLS; SOAP **DeviceId** |
 | **ACS → CPE** | HTTP **Connection Request** to **`:3479`** | Digest **`connreq_username`** / **`connreq_passwd`** (CMDB) |
 
-This document is about **outbound Inform** (masquerade as the CPE). Connection Request is covered in `acspy connreq`.
+This document is about **outbound Inform** (masquerade as the CPE). Inbound **Connection Request** (ACS → CPE, port 3479, Digest auth) is documented in [`tr069_connection_request.md`](tr069_connection_request.md) with lab tooling **`python -m tr069`**. The older `acspy connreq` subcommand remains unchanged but uses a generic path default.
 
 ---
 

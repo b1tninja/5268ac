@@ -257,6 +257,10 @@ If a **labs** or **engineering** pkg installs `/rwdata/config/att.sh` and sets p
 
 ### 3. Offline flash edit
 
+Use **`paceflash patch-trust-engcert`** (see [`nand_patch_install.md`](nand_patch_install.md)) — patches **`gw:trust_engcert`** in **primary + backup** **`tlpart`** board_param env copies and appends **`trust_engcert=true`** to the **loader** manufacturing factory block (~`0x1F004`).
+
+Manual / RE path:
+
 1. **`paceflash paramtool`** — dump keys from assembled **`tlpart`** (see [`paceflash.md`](paceflash.md) § `paramtool`).
 2. Locate **paramtool partition** in **loader** or rwfs image (grep **`gw:trust_engcert=false`** in full flash dump — offsets **`0x41E27A7`** / **`0x41F2FA7`** in one corpus).
 3. Patch to **`true`** preserving blob format/CRC (**`board_param_open`** validates length/CRC — needs RE or live `paramtool`).
@@ -264,7 +268,7 @@ If a **labs** or **engineering** pkg installs `/rwdata/config/att.sh` and sets p
 
 ### 4. Factory / manufacturing block
 
-Factory block at loader **`~0x1FF84`** includes **`factory_mode=1`** ([`board_params_nand.md`](board_params_nand.md)). **No** `trust_engcert` key observed there; engineering trust is **not** the same as factory_mode.
+Factory block at loader **`~0x1F004`** (anchor **`model=`** at **`~0x1FF84`**) includes **`factory_mode`**, **`sn=`**, **`devkey=`**, etc. ([`board_params_nand.md`](board_params_nand.md)). Stock dumps have **no** `trust_engcert` key; **`patch-trust-engcert`** appends **`trust_engcert=true`** into the zero-padded tail so factory/hard reset may re-seed paramtool from manufacturing defaults. **Authoritative runtime key** remains **`gw:trust_engcert`** in **`tlpart`** board_param — factory copy is best-effort until verified on live reset.
 
 ### 5. What does **not** work
 

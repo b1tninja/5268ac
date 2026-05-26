@@ -127,7 +127,7 @@ For grep-style symbol lookup across ELFs under **`bin`/`usr/bin`/`lib`/`usr/lib`
 - [`output/sv_runit_busybox_re.md`](output/sv_runit_busybox_re.md) — **`sv`** = BusyBox **`sv_main`**; **`sv up cmd`** + **`/rwdata/cm`** via **`etc/sv/cmd/run`**.
 - [`output/cmd_cmdb_re.md`](output/cmd_cmdb_re.md) — **`cmd`** binary, **`cmdb_*`** client stubs, **`cmdb_process`** / **`_cmdb_load`** server path.
 - [`libboard.md`](libboard.md) — **`libboard.so`**: serial number / **`board_key_*`** access-code inputs, file-backed **`board_info_*`** reads, relation to **NAND** via VFS (complements CMDB — not the same subsystem).
-- [`output/tw_ulib_pwd_re.md`](output/tw_ulib_pwd_re.md) — **`tw_ulib_pwd_*`** functions, OID columns, **`tw_ulib_pwd_auth`** parameters (Ghidra).
+- [`output/tw_ulib_pwd_re.md`](output/tw_ulib_pwd_re.md) — **`tw_ulib_pwd_*`**: **`MD5(username‖password)`**, CM **`user`** table column map, hashcat mode 20 (Ghidra + `libcm_common` symbols).
 - [`httpd.md`](httpd.md) — web stack; links here for CM vs UI config.
 - [`httpd_endpoints.md`](httpd_endpoints.md) — **`cm_tran_*`** in HURL path.
 - [`output/cm_scrape_parsed.md`](output/cm_scrape_parsed.md) — **`CM:*`** page commands from XSLT (`GETLIST`, `LOCK`, `COMMIT`, etc.); machine JSON [`cm_scrape_parsed.json`](output/cm_scrape_parsed.json), tool [`tools/parse_cm_scrape.py`](tools/parse_cm_scrape.py).

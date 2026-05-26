@@ -86,6 +86,25 @@ Squash correlation on NAND dumps uses **read-side** tooling; **no** `nandwrite`-
 
 ---
 
+## Web-upload memory-safety RE (May 2026)
+
+**Doc:** [`reference/pkgstream_memory_re.md`](../pkgstream_memory_re.md)  
+**JSON:** [`output/ghidra_web_memory_bugs_532678.json`](../../output/ghidra_web_memory_bugs_532678.json)  
+**Fuzz tool:** [`tools/pkgstream_mutate.py`](../../tools/pkgstream_mutate.py)
+
+| Symbol | EA | Export |
+|--------|-----|--------|
+| `lib2sp_install_data` | `0x00020ae0` | [`lib2sp_install_data_532678.c`](lib2sp_install_data_532678.c) |
+| `lib2sp_install_2sp_data` | `0x0001f60c` | [`lib2sp_install_2sp_data_532678.c`](lib2sp_install_2sp_data_532678.c) |
+| `lib2sp_check_data` | `0x00020880` | [`lib2sp_check_data_532678.c`](lib2sp_check_data_532678.c) |
+| `demarshall_2sp_file` | `0x000149d8` | [`lib2sp_demarshall_2sp_file_532678.c`](lib2sp_demarshall_2sp_file_532678.c) |
+| `demarshall_2sp_script` | `0x000154d8` | [`lib2sp_demarshall_2sp_script_532678.c`](lib2sp_demarshall_2sp_script_532678.c) |
+| `pkg_stream_handler` | `0x00421f78` | [`pkgd_pkg_stream_handler.c`](pkgd_pkg_stream_handler.c) |
+
+`lib2sp_verify_signature` @ `0x0001c294` — decompiled in Ghidra session; summarized in JSON hypothesis **M9** (ASN.1 / PKCS#7).
+
+---
+
 ## Files in this directory
 
 | File | Contents |
@@ -93,6 +112,11 @@ Squash correlation on NAND dumps uses **read-side** tooling; **no** `nandwrite`-
 | `lib2sp_do_payload_tlv.c` | FILE/SCRIPT streaming dispatcher |
 | `lib2sp_write_file.c` | **`write(2)`** loop |
 | `lib2sp_open_file.c` | **`open64`** + path snprintf |
+| `lib2sp_install_data_532678.c` | Incremental install / magic / BZ2 |
+| `lib2sp_install_2sp_data_532678.c` | State jump table dispatch |
+| `lib2sp_check_data_532678.c` | Streaming check helper |
+| `lib2sp_demarshall_2sp_file_532678.c` | FILE TLV demarshall bounds |
+| `lib2sp_demarshall_2sp_script_532678.c` | SCRIPT TLV demarshall bounds |
 | `pkgd_pkgman_extract_pkg.c` | **`lib2sp_simple_unpack`** caller |
 | `pkgd_pkgman_run_installer.c` | **`lib2sp_install_data`** installer |
 | `pkgd_pkg_stream_handler.c` | Stream handler (large) |

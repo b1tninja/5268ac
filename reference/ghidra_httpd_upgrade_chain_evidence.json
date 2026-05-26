@@ -1,0 +1,69 @@
+{
+  "firmware_slice": "00D09E 10.5.3.527064-PROD _5268.install.pkgstream.extracted/squashfs-root/usr/bin",
+  "dt_needed": {
+    "httpd": [
+      "libxslt.so.1",
+      "libhttp.so.0",
+      "libsoap.so.0",
+      "libpkg_client.so.0",
+      "libpkg_common.so.0",
+      "libcm_client.so.0",
+      "libcm_common.so.0",
+      "libc.so.0"
+    ],
+    "cwmd": [
+      "libcwm_server.so.0",
+      "libcwm_client.so.0",
+      "libsoap.so.0",
+      "libpkg_client.so.0",
+      "libpkg_common.so.0",
+      "libcm_client.so.0",
+      "libcm_common.so.0",
+      "libc.so.0"
+    ],
+    "pkgd": [
+      "lib2sp.so.0",
+      "libpkg_server.so.0",
+      "libpkg_client.so.0",
+      "libpkg_common.so.0",
+      "libpki.so.0",
+      "libc.so.0"
+    ]
+  },
+  "ghidra_program_paths": {
+    "httpd": "/Firmware/upgrade_chain/httpd",
+    "cwmd": "/Firmware/upgrade_chain/cwmd",
+    "pkgd": "/usr/bin/pkgd"
+  },
+  "ghidra_strings_httpd": {
+    "xci_cmd_pkg_write_fifo": "00468330",
+    "xci_cmd_pkg_run_fifo": "004686f8",
+    "pkg_update_1": "0040cb58",
+    "pkg_update_transport_pkgd": "004c2498",
+    "tmp_httpd_socket": "004bb93c",
+    "mkfifo": "0040cba0"
+  },
+  "ghidra_strings_cwmd": {
+    "rpc_error_pkgd": "0043c1b8",
+    "connect_pkgd_failed": "0043e290",
+    "mgmt_upgstate_key": "0043ca94",
+    "mgmt_upgstate_redirect": "0043cae8",
+    "tmp_cwmd_socket": "0043e214",
+    "tmp_httpd_ref": "0043a420"
+  },
+  "ghidra_strings_pkgd": {
+    "tmp_pkgd": "0043690c",
+    "tmp_pkgspool": "004342ec",
+    "deferred_upg_sh": "00431d2c"
+  },
+  "pkgd_decompile": {
+    "lib2sp_simple_unpack_thunk": "0042d970",
+    "caller": "pkgman_extract_pkg @ 0041c7fc",
+    "note": "pkgman_extract_pkg builds path from CMDB CMLEGACY_PKGS__NARGS, lib2sp_create_context, then lib2sp_simple_unpack(ctx, path)"
+  },
+  "httpd_xci_cmd_pkg_write_fifo_summary": "XCI handler allocates webs_conn pkg_write_fifo state, calls xci_cmd_pkg_run_fifo_base (mkfifo path), opens XCI arg path O_WRONLY, loops lite_getq/write until EOF.",
+  "rodata_substrings": {
+    "httpd_exec_helpers": "Binary contains system(3) and popen(3) string refs; not mapped here to upgrade-specific call sites.",
+    "upgfifo_literal": "Not in Ghidra-defined strings for this httpd slice; fwupgrade.txt 11.5.1 still cites file:///tmp/upgfifo as runtime path (likely CMDB-supplied)."
+  }
+}

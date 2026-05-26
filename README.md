@@ -20,6 +20,9 @@ The repo is built around **repeatable offline analysis**—not a single flash-la
 
 - **[Pace 5268AC — DeviWiki](https://deviwiki.com/wiki/Pace_5268AC)** (ex WikiDevi mirror: FCC **PGR5200AC**, Foxconn ODM, boot log, specs)
 - [Pace 5268AC — WikiDevi (wi-cat.ru mirror)](https://wikidevi.wi-cat.ru/Pace_5268AC)
+- [Exploring the AT&T U-verse 5268AC DSL Modem — Part 1 (Nomotion Blog, archived)](https://web.archive.org/web/20190721042650/https://www.nomotion.net/blog/exploring-att-u-verse-5268ac-dsl-modem-part-1/)
+- [Getting into the Pace 5268AC Router, part 1: Terminals and Hashes — spun.io](https://spun.io/2018/03/18/getting-into-the-pace-5268ac-router-part-1/)
+- [5268ac routers — Hashcat forum thread](https://hashcat.net/forum/thread-10483.html)
 
 Stock images on those pages are often **older** (e.g. Linux **2.6.30** in the archived serial log). This workspace’s primary traced build is **11.5.1.532678** (Lightspeed / ATT install path) — see **[`reference/firmware.md`](reference/firmware.md)** and capture **`fwupgrade.txt`**.
 
@@ -86,6 +89,7 @@ Stack overview (diagram + Ghidra hints): **[`reference/layers_unand_uboot_opentl
 | **`binwalker`** | [binwalker/README.md](binwalker/README.md) | Carve, **`partition-map`**, pkgstream slices |
 | **`corpus`** | [reference/tools.md](reference/tools.md) | SquashFS SQLite index — **`python -m corpus`** |
 | **`acspy`** | [reference/acspy.md](reference/acspy.md) | CWMP / ACS experiments |
+| **`bdcspy`** | [reference/bdc_diagnostic_pull.md](reference/bdc_diagnostic_pull.md) | BDC inbound diagnostic pull (port 61001) |
 | **`hexdumpy`** | — | Shared hexdump helpers |
 
 Full RE index: **[`reference/README.md`](reference/README.md)**.
@@ -98,6 +102,7 @@ Full RE index: **[`reference/README.md`](reference/README.md)**.
 |-------|----------|
 | Boot chain, MTD, storage | [reference/boot_and_storage.md](reference/boot_and_storage.md) |
 | Boot env, UART, **`gw:trust_engcert`** | [reference/boot_environment_trust_eng.md](reference/boot_environment_trust_eng.md) |
+| **NAND `gw:trust_engcert` patch (offline)** | [reference/nand_patch_install.md](reference/nand_patch_install.md) |
 | Carrier CDN, **532678** bundle | [reference/firmware.md](reference/firmware.md) |
 | Command cheat sheet | [reference/tools.md](reference/tools.md) |
 | **`.pkgstream`** byte layout | [reference/pkgstream.md](reference/pkgstream.md) |
@@ -115,8 +120,11 @@ python -m paceflash --flash "PACE 5268AC S34ML01G1@TSOP48.BIN" ls sys1
 # Full flash inventory (MTD, BBM, disklabel)
 python -m paceflash --flash "PACE …BIN" ls --debug
 
-# Install carrier
+# Install carrier (extract only)
 python -m lib2spy firmware_11.5.1.532678/5268.install.pkgstream --extract output/_pkg_extract
+
+# Patch trust_engcert → new flash file (never modifies input)
+python -m paceflash patch-trust-engcert --flash "PACE …BIN" --value true --out output/PACE_trust.BIN
 
 # OpenTL BBM summary
 python -m boardfs virt-map "PACE …BIN" --json

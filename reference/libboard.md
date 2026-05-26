@@ -21,6 +21,17 @@ So **subscriber/access-code presentation on the web** is expected to flow **`htt
 ### Build / capability (context only)
 
 - **Build strings:** `board_build_machine`, `board_build_user`, `board_build_time`, `board_build_ostype`, `board_build_osrevision`, `board_build_version`, `board_build_version_hash`, `board_build_display`, `board_get_deferred_version`, `board_build_digits`, `_board_build_version`
+
+**Firmware version files (Ghidra 532678 `libboard.so`, offline via `paceflash board-info`):**
+
+| API | Ghidra | Path / source |
+|-----|--------|----------------|
+| **`board_build_version`** | `_board_build_version` @ `0x00011c18`; wrapper @ `0x00011ce0` | Single GP-relative path (`board_param_size + 0x5394`) — **not** cleartext in `strings`. Runtime: `open` + `_board_read_parameter`. Offline equivalents on opentla4 ext2: **`sys1/component.txt`**, **`sys1/version.txt`** (runtime **`/rwdata/sys1/…`**); live UI also uses **`/etc/version.txt`**. |
+| **`board_get_deferred_version`** | @ `0x00011e78` | GP + `0x5434` → staging tree (**`sys2/component.txt`**, **`sys2/version.txt`**). |
+| **`board_build_digits`** | @ `0x00011e94` | Parses **`board_build_version()`** dotted string into four `uint32` (not a separate NAND blob) → **`lib2sp_set_sys_version`**. |
+| **`board_info_serialnumber`** | @ `0x00011f84` | Two fallback paths @ GP+`0x5450`, GP+`0x547c`. |
+
+**11.14+ `pkgd`:** `pkg_stream_resolve_pkg` compares **`lib2sp_get_version`** (signed carrier) vs **`board_build_version()`** (mutable ext2 text). See [`pkgstream_security.md`](pkgstream_security.md).
 - **Feature flags:** `feature_exist`, `get_usb_ol`, `has_hpna`, `has_battery`, `has_5g`, `has_quanwifi`, `has_bcmwifi`, `has_voice`, `has_bonded`, `has_atm`
 
 ### Identity fields read as files (`board_info_*`)

@@ -282,6 +282,8 @@ More detail: **[`binwalker/README.md`](binwalker/README.md)**.
 
 ## Legal and ethics
 
+Full notice: **[`LEGAL.md`](../LEGAL.md)** (DMCA § 1201, research-only attestation).
+
 - Use this documentation and tooling only on **hardware you own** or are **explicitly authorized** to analyze.
 - Do not use extracted material to bypass **DRM**, **legal terms of service**, or **export** rules.
 - **Credentials, keys, and certificates** may appear in dumps; handle and publish according to responsible disclosure and local law.

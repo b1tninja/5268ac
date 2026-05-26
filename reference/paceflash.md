@@ -66,6 +66,7 @@ Inside the shell, **`paceflash:/$`** is the ext2 root on **`opentla4`**; **`cd s
 | **`factory-params`** | Parse factory **`sn=`** / **`mac=`** / … from **loader** MTD (manufacturing block). |
 | **`dump-eapol-cert`** | Extract **`lightspeed_p12=`** / **`device_p12=`** from assembled **`tlpart`**, decrypt PKCS#12 to PEM. |
 | **`paramtool`** | Offline **`paramtool -show`** / **`-get gw:…`** against **`board_param`** store in **`tlpart`** (`gw:*`, `*_p12` lines). See [`boot_environment_trust_eng.md`](boot_environment_trust_eng.md). |
+| **`patch-trust-engcert`** | Set **`gw:trust_engcert`** in primary + backup env CRC blobs; writes **`--out`** (input unchanged). [`nand_patch_install.md`](nand_patch_install.md). |
 | **`dump-http-auth`** | HTTP realm map, factory **accesscode** / Wi‑Fi, CMDB **`user`** table (ext2 + **tlpart** scan). |
 | **`build-carrier-index`** | Precompute pkgstream squash digests for upgrade correlation. |
 
@@ -112,6 +113,38 @@ python -m paceflash factory-params "PACE …BIN" --redact
 - Default: NAND-translate full-chip physical dumps, then read linear **loader** slice.
 - **`--offset`**: hint for `model=` (PACE captures ~`0x1FF84`).
 - **`--redact`**: mask `devkey`, `authcode`, Wi‑Fi keys for safe logs.
+
+### `gen-network-config`
+
+Emit **wpa_supplicant** + **systemd-networkd** files for Lightspeed WAN **802.1X** (router profile). With a flash operand, runs **`dump-eapol-cert`** internally: **`lightspeed_p12`** from **`tlpart`** → **`pki/lightspeed.p12`** + split **`client.pem`** / **`client.key`**. CA resolves from **`--ca-cert`**, pre-extracted **`lightspeed-prod-cacerts.pem`**, or **`att_unified_eapol-certs.pkgstream`**.
+
+**DHCP modem parity** (default on): **`wan0.network`** gets **`ClientIdentifier=00D09E-{sn}`**, **`[Link] MACAddress=`** (WAN **chaddr**), **`VendorClassIdentifier=2WHPL M.m.b`**, **`RequestOptions=`** (modem parameter list), **`SendOption=57:uint16:1500`**. Use **`--firmware-version`** or **`--vendor-class`** for option 60; **`--wan-mac`** when **chaddr** ≠ cert CN. **`--no-modem-dhcp`** for minimal DHCP. Option **125** (BBF device id) is documented in README only — systemd-networkd cannot encode it. Full field guide: [`linux_8021x_lightspeed.md`](linux_8021x_lightspeed.md).
+
+```powershell
+python -m paceflash gen-network-config "PACE …BIN" --out-dir .\lightspeed-network --interface wan0
+
+# Match a packet capture (different MAC / firmware line)
+python -m paceflash gen-network-config "PACE …BIN" `
+  --wan-mac d4:b2:7a:6b:b1:4c `
+  --firmware-version "11.14.1.123456" `
+  --out-dir .\lightspeed-network
+
+python -m paceflash gen-network-config --help
+```
+
+| Flag | Role |
+|------|------|
+| **`--out-dir`** | Output tree (default `./lightspeed-network`) |
+| **`--interface`** | Linux WAN ifname (default `wan0`) |
+| **`--ca-cert`** / **`--eapol-certs-pkgstream`** | Operator CA PEM |
+| **`--wan-mac`** / **`--no-clone-mac`** | DHCP **chaddr** via `MACAddress=` |
+| **`--dhcp-client-id`** / **`--serial`** | Option **61** (`00D09E-{sn}`) |
+| **`--firmware-version`** / **`--vendor-class`** | Option **60** `2WHPL …` |
+| **`--product-class`** | README / option **125** notes (default `homeportal`) |
+| **`--no-modem-dhcp`** | Omit vendor class, param list, max-msg size |
+| **`--no-p12`** | PEM split only (no `pki/lightspeed.p12`) |
+| **`--client-pem`** | Offline PEM instead of flash |
+| **`--dry-run`** / **`--json`** | Plan or machine-readable result |
 
 ### `dump-eapol-cert`
 

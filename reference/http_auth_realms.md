@@ -44,12 +44,12 @@ Outputs: realm map, **`factory_http`** (accesscode, authcode, Wi‑Fi), **`cmdb_
 
 | Step | Function | Behavior |
 |------|----------|----------|
-| Set password | **`tw_ulib_pwd_set_passwd`** @ `0xc1454` | Reads **salt** from CM user row **column 1** → `auStack_318`; calls **`tw_ulib_pwd_hash(auStack_318, plaintext, …)`** |
-| Hash | **`tw_ulib_pwd_hash`** @ `0xbf82c` | **`MD5_Init`**, **`MD5_Update(salt)`**, **`MD5_Update(password)`**, **`MD5_Final`** → 16 bytes → **`nu_b64_ntop`** into buffer |
-| Store | CM **`password`** field | XML shows **`base64:HS3tMhea22UjtsQmB0bKpQ==`** (16-byte digest, not plaintext) |
-| Login check | **`tw_ulib_pwd_auth`** @ `0xc03dc` | Loads CM password field → transform → **`strcmp(typed_password, transformed_field)`** @ `0xc0914` (**not** `memcmp` on raw MD5) |
+| Set password | **`tw_ulib_pwd_set_passwd`** @ `0xc1454` | Reads CM **column 1** (`user` / username) → salt buffer; **`tw_ulib_pwd_hash(username, plaintext, …)`** |
+| Hash | **`tw_ulib_pwd_hash`** @ `0xbf82c` | **`MD5(username ‖ password)`** → 16 bytes → **`nu_b64_ntop`** → stored as **`base64:…`** in column 2 |
+| Store | CM **`password`** field | XML **`<S N="user">adm</S>`** + **`<S N="password">base64:…</S>`** |
+| Login check | **`tw_ulib_pwd_auth`** @ `0xc03dc` | Reads column **2** only → **`strcmp(typed_password, stored/transformed string)`** (**not** re-hash of typed password) |
 
-**Salt:** CM **column 1** for the user row (not exported in the XML `<S N="password">` line alone). Offline brute must recover that salt string from RE or a fuller CM export.
+**Salt = username:** CM column **1** is the visible **`user`** field (`adm`, `dslf-config`, …) — not a hidden column. Hashcat **mode 20** line format: **`digest_hex:username`** (e.g. `1d2ded32179adb6523b6c4260746caa5:adm`). Full column map: **[`output/tw_ulib_pwd_re.md`](../output/tw_ulib_pwd_re.md)**.
 
 **Pass-the-hash (web UI):** Because verification is **`strcmp`**, the typed password must equal whatever string ends up in the compare buffer after transform — often one of:
 
@@ -62,9 +62,21 @@ That is **not** the same as knowing the label **accesscode**; factory **`accessc
 **Lab tools:**
 
 ```powershell
-python tools/verify_cm_password.py --cmdb cmlegacy.203.xml --password "4\52@99095"
-python tools/verify_cm_password.py --flash "PACE …BIN" --salt "candidate_salt" --password "guess"
+python tools/extract_cm_http_auth_hashes.py --text path/to/dump-http-auth.log
+python tools/extract_cm_http_auth_hashes.py --flash "PACE …BIN"
+python tools/crack_cm_passwords.py
+python tools/verify_cm_password.py --flash "PACE …BIN" --password "4\52@99095" --salt adm
 ```
+
+Hashcat (outputs in **`crack/`**; use **`-D 2`** for OpenCL GPU on this box):
+
+```powershell
+cd D:\tools\hashcat-6.2.6
+hashcat.exe -m 0  -a 0 -D 2 D:\electronics\5268ac\crack\cm_user_md5_mode0.txt  D:\electronics\5268ac\crack\cm_password_candidates.txt
+hashcat.exe -m 20 -a 0 -D 2 D:\electronics\5268ac\crack\cm_user_md5_mode20.txt D:\electronics\5268ac\crack\cm_password_candidates.txt
+```
+
+Mode **0** treats digests as **unsalted MD5** (usually fails). Mode **20** is **`md5($salt.$pass)`** — use **`crack/cm_user_md5_mode20.txt`** (`digest:username`). Regenerate with **`tools/extract_cm_http_auth_hashes.py`** after any dump.
 
 Module: **`paceflash/cmdb_password.py`** (`tw_ulib_pwd_hash`, `verify_password_candidates`).
 

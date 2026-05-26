@@ -138,10 +138,17 @@ SOAP is **not** expressed as `/xslt?PAGE=...`. [`soap_conf.xml`](work_tl_crc/pkg
 | **URL rewrite → `/xslt?...`** | **`rewrite_mod_handle_uri`** @ `0x0041b2a0` | Walks a **map** of prefix → rewrite template; **`strncmp`** match on URI; builds new path via **`snprintf`** from template + remainder; may **`http_par_urlencoded`** on query part after `?`. Implements **`rewrite_conf.xml`** semantics. |
 | **HURL `/hurl`** | **`hurl_mod_handle_uri`** @ `0x004163f8` | Validates vhost config vs request; walks HURL event list (`map_index` / **`strcasecmp`** against event names such as embedded **`PHY_NONE`**); updates redirect target (`strdup`); interacts with **`webs_vhost_get_config`**, **`cm_tran_*`**, **`tw_getdomainname`**. |
 | **XSLT `PAGE=` pipeline** | **`xci_cmd_page_xslt`** @ `0x0046dc70`; **`xci_cmd_page_xsltjump`** @ `0x0046df08` | Reads **`PAGE`** / debug via **`webs_conn_getarg`**; loads **`webs_conn_get_config`** for stylesheet path; registers output filters **`page_xslt_ops`** (and **`page_xml_ops`** for alternate mode). **libxslt** invoked via **`page_xslt_ops`** / **`xsltApplyStylesheetUser`** (imports). |
-| **SOAP TR-064** | **`soap_mod_handle_request`** @ `0x0041c704`; **`soap_mod_handle_response`** @ `0x0041bacc`; **`soap_mod_init`** @ `0x0041c610` | Requires vhost SOAP profile (**`webs_vhost_get_config`** matches expected service id); **POST** body filter **`soap_in_filter`**; dispatches registered SOAP actions. String **`soapmod_tr064`** and **`soap_tr064.c`** tie to **`tr064_*`** service handlers (WAN, WLAN, reboot, factory reset, etc.). |
+| **SOAP TR-064** | **`soap_mod_handle_request`** @ `0x0041c704`; **`soap_mod_handle_response`** @ `0x0041bacc`; **`soap_mod_init`** @ `0x0041c610` | URI prefix **`/soap/tr064`** in **`mod_uri_table`** @ `0x004d57d0`. **Gate:** vhost **`soap.enable`** must be **`true`** (`webs_vhost_get_config` @ `0x0042c3d8`) or **404**. Then **POST**, **`mif_connect`**, **`SOAPAction`** match vs **`/ui/conf/soap_conf.xml`**. See [`httpd_soap_enable_gate.md`](httpd_soap_enable_gate.md). |
 | **ACL / passwords** | **`tw_http_acl_*`**, **`tw_ulib_pwd_auth`** @ `0x004c0160`, etc. | ACL rules and passwd-store auth used with HTTP realms; **`_auth_password_dslfconfig`** string present for TR-064/dslf backend alignment. |
 
-SOAP HTTP path selection is driven by **per-service URI strings** registered in the SOAP module (matched in **`soap_mod_handle_request`** against request URI via **`memcmp`** over configured paths)—exact path strings live in **`.rodata`** next to service maps; use **`search_strings`** on **`httpd`** for the control URL if needed.
+SOAP HTTP paths are the UPnP **`controlURL`** values advertised in **`ui/upnp/tr064/InternetGatewayDevice.xml`** (and IGD/WFA variants), e.g.:
+
+- `/soap/tr064?DEVNAME=tr064&MIFPATH=InternetGatewayDevice.DeviceInfo.&SEQ=`
+- `/soap/tr064?DEVNAME=tr064&MIFPATH=InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1.&SEQ=`
+
+**`soap_mod_handle_request`** @ `0x0041c704` matches the request URI against registered service paths (`memcmp` on `SOAPAction` header value + path). **`soap_in_filter`** @ `0x0041bccc` accumulates the POST body via **`reallocf`**. Actions and digest requirements are in **`conf/soap_conf.xml`** (`GetInfo` has no digest; `FactoryReset` / `Reboot` require digest realm **TR-064**, user **`dslf-config`**).
+
+**Fuzz harness:** `httpdfuzz` target `P2-soap-body-realloc` — see `output/httpd_fuzz_targets_att532678.json`.
 
 ---
 
@@ -165,5 +172,6 @@ See **[`security.md`](security.md)** — web stack attack surface and fuzzing pr
 ## See also
 
 - [`httpd.md`](httpd.md) — stack overview
+- [`qxdm_passcode.md`](qxdm_passcode.md) — QxDM debug passcode (`NCWQCDBG0` / `/ncwqcdbg`): last 6 digits of IMEI
 - [`output/page_inventory_att_532678.md`](output/page_inventory_att_532678.md) — generated **`PAGE`** / **`NEXTPAGE`** vs **`newxsl/pages/*.xml`** ( **`python tools/page_inventory.py`** )
 - [`output/web_admin_ghidra_correlation.md`](output/web_admin_ghidra_correlation.md) — earlier MCP correlation

@@ -31,5 +31,6 @@ The **LAN (and often WAN-facing) web UI** is implemented by **`/usr/bin/httpd`**
 
 - **[`httpd.md`](httpd.md)** — stack map, `conf/*_conf.xml` roles, libraries, and Ghidra correlation.
 - **[`httpd_endpoints.md`](httpd_endpoints.md)** — enumerated rewrites, HURL targets, SOAP/TR-064 scope, vhost/realm matrix, and **`httpd`** dispatch functions (rewrite/HURL/XSLT/SOAP modules).
+- **[`httpd_buffer_overflow_audit.md`](httpd_buffer_overflow_audit.md)** — static stack/heap BOV triage (`http_par_request`, FW6 `sprintf`, `get_restports`); fuzz checklist in [`output/httpd_fuzz_targets_att532678.json`](../output/httpd_fuzz_targets_att532678.json).
 
 Treat **`httpd`** and its **`libhttp*` / `libsoap` / libxslt / SSL** dependency chain as the primary web-admin exposure for threat modeling and fuzzing prioritization. Use **`httpd_endpoints.md`** as the checklist of URLs and `PAGE=` tokens to prioritize when assessing exposure (LAN/WAN, MDC port **50001**, WRA, digest TR-064).
