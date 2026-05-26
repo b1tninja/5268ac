@@ -26,6 +26,14 @@ from uboot.cmdline import (
 )
 from uboot.env import ParsedUbootEnvV1, parse_uboot_env_v1, read_uboot_env_v1_file
 from uboot.mtdparts import partition_table_from_bootargs
+from uboot.uimage import (
+    UIMAGE_MAGIC_BE,
+    UImageHeader,
+    extract_all_members,
+    extract_kernel_blob,
+    parse_uimage_header,
+    uimage_header_crc_ok,
+)
 
 __all__ = [
     "parse_bootargs",
@@ -40,4 +48,10 @@ __all__ = [
     "segments_with_setenv_bootargs",
     "extract_bootargs_value_from_setenv",
     "partition_table_from_bootargs",
+    "UIMAGE_MAGIC_BE",
+    "UImageHeader",
+    "extract_all_members",
+    "extract_kernel_blob",
+    "parse_uimage_header",
+    "uimage_header_crc_ok",
 ]
