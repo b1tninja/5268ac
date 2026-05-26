@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 # Legacy uImage big-endian magic (``IH_MAGIC = 0x27051956``).  Inlined here so the ``opentl``
-# Defined once in U-Boot and never changes; mirrors :data:`binwalker.extract.uimage.UIMAGE_MAGIC_BE`.
+# Defined once in U-Boot and never changes; mirrors :data:`uboot.uimage.UIMAGE_MAGIC_BE`.
 UIMAGE_MAGIC_BE = 0x27051956
 
 # --- 2SP / carrier header (see demarshall_2sp_header in lib2sp.so) ---
@@ -270,34 +270,58 @@ def extract_slices_native(
     strict_uimage_decompress: bool = False,
 ) -> Dict[str, Any]:
     """
-    Carve SquashFS / uImage blobs using :func:`scan_embedded_images` only (no Binwalk JSON).
-
-    Filenames follow the same convention as :func:`extract_pkgstream_slices`.
+    Carve SquashFS / uImage blobs using :func:`scan_embedded_images` only.
     """
-    from binwalker.carved import Pkgstream
-
     want = names if names is not None else {"squashfs", "uimage"}
     src = Path(pkgstream_path).resolve()
     out = Path(out_dir).resolve()
+    out.mkdir(parents=True, exist_ok=True)
 
-    pc = Pkgstream(
-        src,
-        names=sorted(want),
-        strict_uimage_decompress=strict_uimage_decompress,
-    )
-    used: Set[str] = set()
+    raw = src.read_bytes()
+    body, outer_bzip2 = try_decompress_bzip2_prefix(raw)
+
     written: List[str] = []
     manifest_rows: List[Dict[str, Any]] = []
-    for art, er in pc.save_all(out, used_filenames=used):
-        written.append(str(er.path))
-        manifest_rows.append(art.manifest_entry(er))
-    body = pc._native_body
-    assert body is not None
     rows = scan_embedded_images(body)
+
+    used: Set[str] = set()
+    for row in rows:
+        name = str(row.get("name") or "artifact")
+        if name not in want:
+            continue
+        off = int(row["offset"])
+        size = int(row["size"])
+        suffix = ".bin"
+        stem = f"{src.stem}_{name}_{off:#010x}_{size}"
+        candidate = f"{stem}{suffix}"
+        seq = 1
+        while candidate in used or (out / candidate).exists():
+            candidate = f"{stem}_{seq}{suffix}"
+            seq += 1
+        used.add(candidate)
+        dest = out / candidate
+        blob = body[off : off + size]
+        if strict_uimage_decompress and name == "uimage":
+            # Strict validation hook: keep byte-for-byte output, but parse enough to fail early
+            # when the detected span is not actually a well-formed legacy uImage.
+            from uboot.uimage import extract_outer_payload
+
+            extract_outer_payload(blob)
+        dest.write_bytes(blob)
+        written.append(str(dest))
+        manifest_rows.append(
+            {
+                "signature_name": name,
+                "path": str(dest),
+                "offset": off,
+                "size": size,
+                "source": str(src),
+            }
+        )
 
     summary: Dict[str, Any] = {
         "pkgstream_path": str(src),
-        "outer_bzip2": pc.outer_bzip2,
+        "outer_bzip2": outer_bzip2,
         "out_dir": str(out),
         "extracted_count": len(written),
         "extracted_files": written,

@@ -11,10 +11,6 @@ bytes**; **mounting** a rootfs is a **separate** boot / script step, not somethi
 magic-scan path does. See ``opentl/pkgstream_format_lib2sp.md``, ``reference/pkgstream.md``
 §10, and :mod:`lib2spy.pkgstream_runtime` for how TLVs are used at runtime (stub map).
 
-For the **same** :class:`~binwalker.carved.Artifact` model and a single entry point, prefer
-:func:`binwalker.unified_carve.carve` (CLI: ``python -m binwalker carve-unified …``) or iterate
-:class:`~binwalker.carved.Pkgstream` and call :meth:`~binwalker.carved.Artifact.save` per hit.
-
 Use :func:`pkgstream` for a session handle, then :meth:`PkgstreamCarves.carve_artifacts`.
 
 The parser / verifier module remains :mod:`lib2spy.pkgstream`; this module only handles **carving**.

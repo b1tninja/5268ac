@@ -2,7 +2,7 @@
 
 Python toolkit for **ATT / 2Wire install carriers** (`.pkgstream`): parse the **2WIRE_SP** container, walk prefix TLVs, verify **PKCS#7** signatures and per-**FILE** / per-**SCRIPT** digests, extract payloads, and slice embedded **SquashFS** / **uImage** blobs for corpus work.
 
-This package does **not** run **`pkgd`** or mount filesystems on a live gateway. It mirrors on-disk checks documented from **`/usr/lib/lib2sp.so`** (Ghidra) and complements **binwalker** / **corpus** workflows on the same files.
+This package does **not** run **`pkgd`** or mount filesystems on a live gateway. It mirrors on-disk checks documented from **`/usr/lib/lib2sp.so`** (Ghidra) and feeds **corpus** workflows on the same files.
 
 **Format specification:** **[`reference/pkgstream.md`](../reference/pkgstream.md)** (full byte layout, Ghidra xref tables).  
 **Security / trust policy:** **[`reference/pkgstream_security.md`](../reference/pkgstream_security.md)**.  
@@ -66,7 +66,7 @@ python -m lib2spy.pkgstream_runtime carrier.pkgstream --text
 
 ```python
 from pathlib import Path
-from lib2spy import verify_pkgstream, extract_payloads, format_full_report
+from lib2spy import verify_pkgstream, extract_payloads, format_full_report, iter_pkgstream_artifacts
 from lib2spy.pkgstream import _parse_only  # structural parse dict (internal helper)
 
 path = Path("install.pkgstream")
@@ -80,6 +80,7 @@ report = verify_pkgstream(
 print(format_full_report(report, parsed))
 
 manifest = extract_payloads(path, out_dir=Path("output/extract"), verify_first=True)
+artifacts = list(iter_pkgstream_artifacts(path))
 ```
 
 Public exports from **`import lib2spy`** are listed in [`__init__.py`](__init__.py): `verify_pkgstream`, `VerifyReport`, `FileRecord`, `ScriptRecord`, `extract_payloads`, `extract_pkgstream_slices`, `write_directory_manifest`, etc.
@@ -89,11 +90,11 @@ Public exports from **`import lib2spy`** are listed in [`__init__.py`](__init__.
 ```python
 from lib2spy.pkgstream_corpus import extract_pkgstream_slices, write_directory_manifest
 
-# SquashFS + uImage slices (binwalker Artifact model)
-artifacts = extract_pkgstream_slices("install.pkgstream", out_dir="output/slices")
+# SquashFS + uImage slices for standalone inspection
+summary = extract_pkgstream_slices("install.pkgstream", out_dir="output/slices")
 ```
 
-Used by **`binwalker`** unified carve and **`tests/test_pkgstream_corpus.py`**.
+For direct indexing, prefer **`python -m corpus --build-index --pkgstream install.pkgstream`**.
 
 ---
 
@@ -106,7 +107,8 @@ Used by **`binwalker`** unified carve and **`tests/test_pkgstream_corpus.py`**.
 | [`pkgstream.py`](pkgstream.py) | CLI, human report formatting, **`extract_payloads`** |
 | [`pkgstream_trust_anchors.py`](pkgstream_trust_anchors.py) | `--extract-trust-store`, bundled root resolution |
 | [`pkgstream_carves.py`](pkgstream_carves.py) | Carve-oriented helpers |
-| [`pkgstream_corpus.py`](pkgstream_corpus.py) | Slice extract + manifests for corpus / binwalker |
+| [`artifacts.py`](artifacts.py) | Public artifact iterator for corpus ingestion |
+| [`pkgstream_corpus.py`](pkgstream_corpus.py) | Slice extract + manifests for corpus |
 | [`pkgstream_runtime/`](pkgstream_runtime/) | Install-phase **stubs** and prefix **`tlv_dry_run`** (dispatch hints, not runtime pkgd) |
 | [`data/trust_roots/`](data/trust_roots/) | Device PEM anchors for **`--validate-chain`** — see **[PROVENANCE.md](data/trust_roots/PROVENANCE.md)** |
 
@@ -143,8 +145,7 @@ Example ground-truth JSON from a carrier run: [`output/lib2spy_532678_install_pk
 
 | Tool | Relationship |
 |------|----------------|
-| **`binwalker`** | `pkgstream-slices`, unified carve; shares slice model with `pkgstream_corpus` |
-| **`corpus`** | Grep dissected SquashFS trees after you extract slices |
+| **`corpus`** | Grep direct pkgstream artifacts or dissected SquashFS trees |
 | **`paceflash`** | NAND / ext2 inventory; upgrade correlation may reference pkgstream digests |
 | **`reference/firmware_upgrade_process.md`** | How install carriers reach the device |
 

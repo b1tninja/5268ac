@@ -1,15 +1,12 @@
 """
 Slice artifacts from a carrier ``.pkgstream`` via :mod:`lib2spy.native_pkgstream` (magic scan).
 Also write SHA-256 manifests for extracted blobs or an unpacked directory tree.
-
-:func:`extract_pkgstream_slices` shares the same :class:`binwalker.carved.Pkgstream` /
-:class:`binwalker.carved.Artifact` model as :func:`binwalker.unified_carve.carve` (``carve`` prints and saves in
-:mod:`binwalker.unified_carve` itself).
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, Tuple
@@ -108,6 +105,32 @@ def iter_squashfs_files(squashfs_path: str | Path) -> Iterator[Tuple[str, bytes]
         yield from walk(fs.root, "")
 
 
+def iter_squashfs_files_from_bytes(data: bytes) -> Iterator[Tuple[str, bytes]]:
+    """
+    Yield ``(relative_posix_path, file_bytes)`` for each regular file in an in-memory
+    SquashFS image via ``dissect.squashfs``. Symlinks are skipped.
+    """
+    from dissect.squashfs import SquashFS  # type: ignore[import-untyped]
+
+    def walk(inode: Any, rel: str) -> Iterator[Tuple[str, bytes]]:
+        if inode.is_symlink():
+            return
+        if inode.is_file():
+            stream = inode.open()
+            try:
+                body = stream.read()
+            finally:
+                stream.close()
+            yield (rel.replace("\\", "/").lstrip("/"), body)
+        elif inode.is_dir():
+            for ch in inode.iterdir():
+                sub = f"{rel}/{ch.name}".strip("/") if rel else ch.name
+                yield from walk(ch, sub)
+
+    fs = SquashFS(io.BytesIO(data))
+    yield from walk(fs.root, "")
+
+
 def unsquash_pkgstream_carves_dissect(
     manifest_rows: Sequence[Dict[str, Any]],
     dissect_out_dir: str | Path,
@@ -154,7 +177,7 @@ def extract_pkgstream_slices(
     """
     Carve SquashFS / uImage from ``pkgstream_path`` using :func:`lib2spy.native_pkgstream.scan_embedded_images`
     (magic / superblock scan; optional outer bzip2 decompression). Filenames match
-    :func:`binwalker.artifact_carver.carve_artifacts`. Optionally writes ``corpus_manifest.json``.
+    the native embedded-image scanner. Optionally writes ``corpus_manifest.json``.
 
     Returns a summary dict suitable for JSON serialization.
     """
