@@ -238,6 +238,79 @@ def ntl_ecc_read(page_size: int, bounce: bytearray) -> tuple[int, bool]:
 #endregion
 
 
+#region kernel: 0x80288388 write path (inverse of ntl_ecc_read)
+def _pack_large_page_ecc_syndromes(
+    bounce: bytearray,
+    *,
+    page_size: int,
+    spare_base: int,
+    syndromes: list[tuple[tuple[int, int, int], tuple[int, int, int]]],
+) -> None:
+    """
+    Pack precomputed slice syndromes into the large-page spare ECC layout.
+
+    Slice 0 uses scattered lanes ``[0x16,0x17,2]`` / ``[3,6,7]``. Slice 1 starts at
+    spare ``0x12`` and shares bytes ``0x16`` / ``0x17`` with slice-0 lo[0:2].
+    """
+    s0_lo, s0_hi = syndromes[0]
+    s1_lo, s1_hi = syndromes[1]
+    bounce[spare_base + 2] = s0_lo[2]
+    bounce[spare_base + 3] = s0_hi[0]
+    bounce[spare_base + 6] = s0_hi[1]
+    bounce[spare_base + 7] = s0_hi[2]
+    bounce[spare_base + 0x12] = s1_lo[0]
+    bounce[spare_base + 0x13] = s1_lo[1]
+    bounce[spare_base + 0x14] = s1_lo[2]
+    bounce[spare_base + 0x15] = s1_hi[0]
+    bounce[spare_base + 0x16] = s0_lo[0]
+    bounce[spare_base + 0x17] = s0_lo[1]
+    for idx in range(2, len(syndromes)):
+        lo, hi = syndromes[idx]
+        off = spare_base + 0x18 + 6 * (idx - 2)
+        bounce[off : off + 3] = bytes(lo)
+        bounce[off + 3 : off + 6] = bytes(hi)
+
+
+def ntl_ecc_write(page_size: int, bounce: bytearray) -> None:
+    """
+    Store ECC syndromes for ``bounce`` (page data || 64-byte spare).
+
+    Mirrors ``ntl_ecc_read`` placement: first 512 B slice in spare tail lanes,
+    further slices at ``bounce[page_size + 0x12 + 6*(idx-1)]``.
+    """
+    if page_size not in (512, 2048):
+        raise ValueError(f"unsupported page_size {page_size}")
+    if len(bounce) < page_size + 64:
+        raise ValueError("bounce must be page_size + spare/meta bytes")
+    spare_base = page_size
+    slices = page_size >> 9
+    if page_size == 0x200:
+        half0 = 0
+        half1 = 0x100
+        calc_lo = opentl_calculate_ecc(bounce, half0)
+        calc_hi = opentl_calculate_ecc(bounce, half1)
+        bounce[spare_base + 0] = calc_lo[0]
+        bounce[spare_base + 1] = calc_lo[1]
+        bounce[spare_base + 2] = calc_lo[2]
+        bounce[spare_base + 3] = calc_hi[0]
+        bounce[spare_base + 6] = calc_hi[1]
+        bounce[spare_base + 7] = calc_hi[2]
+        return
+
+    syndromes: list[tuple[tuple[int, int, int], tuple[int, int, int]]] = []
+    for idx in range(slices):
+        half0 = idx * 0x200
+        calc_lo = opentl_calculate_ecc(bounce, half0)
+        calc_hi = opentl_calculate_ecc(bounce, half0 + 0x100)
+        syndromes.append((calc_lo, calc_hi))
+    _pack_large_page_ecc_syndromes(
+        bounce, page_size=page_size, spare_base=spare_base, syndromes=syndromes
+    )
+
+
+#endregion
+
+
 #region kernel: 0x80288600
 def verify_read_phy_page_bounce(
     bounce: bytearray,

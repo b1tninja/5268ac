@@ -51,7 +51,7 @@ def validate_virt_to_phys_block_entries(virt_to_phys: list[int], geo: TLGeometry
 
 
 # Historical ``schema`` string on disk for virt→phys map JSON (changing breaks existing files).
-SCHEMA_V1 = "binwalker_tl_bbm_v1"
+SCHEMA_V1 = "opentl_tl_bbm_v1"
 
 
 @dataclass(frozen=True)

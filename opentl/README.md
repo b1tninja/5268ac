@@ -53,7 +53,7 @@ python -m opentl.tl_mount tlpart.bin --spare flat_spare.bin --out-bbm bbm.json
 python -m opentl hexdump tlpart.bin --range 0 0x2000
 ```
 
-**`paceflash`** and **`binwalker`** workflows sit above this layer — see **[`reference/paceflash.md`](../reference/paceflash.md)** and **[`reference/tools.md`](../reference/tools.md)** (`partition-map`, `tl-bbm`, carve pipelines).
+**`paceflash`** and **`corpus`** workflows sit above this layer — see **[`reference/paceflash.md`](../reference/paceflash.md)** and **[`reference/tools.md`](../reference/tools.md)**.
 
 ---
 
@@ -101,7 +101,7 @@ virt_stream = session.virtual_tl_byte_stream()
 | [`opentla4_volume.py`](opentla4_volume.py) | Assemble rw slice (NTL / linear / BBM read models) |
 | [`tldisk.py`](tldisk.py) | BSD disklabel slices from `tlpart` MTD bytes |
 | [`nand_translate.py`](nand_translate.py) | Raw dump → logical main + flat spare files |
-| [`nand_pipeline.py`](nand_pipeline.py) | **`NandPipeline`**, post-carve BBM hooks for binwalker |
+| [`nand_pipeline.py`](nand_pipeline.py) | **`NandPipeline`**, translate + BBM + ext2 assembly helpers |
 | [`tl_mount/`](tl_mount/) | `mount_flash_image`, CLI |
 | [`stats_block.py`](stats_block.py) | Stats-block tail layout (partial decode) |
 | [`paths.py`](paths.py) | `OUTPUT_DIR`, `find_carved_tlpart()` |
@@ -128,7 +128,7 @@ Kernel RE cross-reference: Python sources use **`#region kernel: 0x…`** marker
 |---------|----------------------|
 | **`boardfs`** | `FsRegistry`, `assemble_opentla4_volume`, BBM attach — [`reference/boardfs.md`](../reference/boardfs.md) |
 | **`paceflash`** | Inventory / `ls` / `shell` via **boardfs** (no direct `opentl` imports in CLI) — [`reference/paceflash.md`](../reference/paceflash.md) |
-| **`binwalker`** | `flash_layout`, carve manifests, `post_carve_bbm` — [`binwalker/README.md`](../binwalker/README.md) |
+| **`corpus`** | Firmware search indexing through **`paceflash.artifacts`** |
 
 ---
 

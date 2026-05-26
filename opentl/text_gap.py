@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 # Historical ``schema`` field value for text-gap JSON reports.
-TEXT_GAP_SCHEMA_V1 = "binwalker_tl_text_gap_v1"
+TEXT_GAP_SCHEMA_V1 = "opentl_tl_text_gap_v1"
 
 # Syslog-like prefix (RFC3164-ish month day time)
 _SYSLOG_MONTH = rb"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
