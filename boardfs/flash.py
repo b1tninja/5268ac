@@ -1,12 +1,13 @@
-"""Build :class:`~binwalker.extract.flash_layout.FlashImage` from ``mtdparts`` + dump size."""
+"""Build :class:`~boardfs.flash_layout.FlashImage` from ``mtdparts`` + dump size."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from binwalker.extract.flash_layout import FlashImage, build_partitions_from_mtdparts, effective_mtd_reference_size
+from boardfs.flash_layout import FlashImage, build_partitions_from_mtdparts
 from unand.geometry import NandGeometry, PACE_DEFAULT
+from unand.geometry import effective_mtd_reference_size
 
 
 #region kernel_adjacent mtdparts_FlashImage (kernel MTD offset semantics on logical plane)

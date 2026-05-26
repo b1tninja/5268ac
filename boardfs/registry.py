@@ -6,9 +6,8 @@ import os
 from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 
-from binwalker.extract.flash_layout import FlashImage, MtdPartition
-
 from boardfs.block import AssembledBlockDev, BlockDev, BlockSlice
+from boardfs.flash_layout import FlashImage, MtdPartition
 from boardfs.mount_spec import parse_root_from_cmdline
 from boardfs.ubi_cmdline import UbiMtdAttachSpec, iter_ubi_mtd_attach_specs
 from opentl.logical_opentl_session import LogicalOpenTLSession
@@ -60,14 +59,14 @@ def _tl_scan_cap_for_flash(flash: FlashImage) -> int:
 @dataclass
 class FsRegistry:
     """
-    Holds a :class:`~binwalker.extract.flash_layout.FlashImage` and lazily enumerates TL slices
+    Holds a :class:`~boardfs.flash_layout.FlashImage` and lazily enumerates TL slices
     inside ``tlpart`` via :func:`opentl.tldisk.enumerate_tl_slices_from_tlpart_mtd_bytes` (kernel
     TL superblock prefix + disklabel). Caches ``mtd_skip`` so :meth:`block_dev_for_tl_slice` maps
     virtual slice offsets to bytes correctly. A failed first parse is cached and re-raised on
     subsequent calls without re-reading or re-parsing ``tlpart``.
 
     When :attr:`tlpart_tl_scan_bytes` is set manually, TL disklabel enumeration uses that buffer
-    instead of :meth:`~binwalker.extract.flash_layout.FlashImage.read_partition`.
+    instead of :meth:`~boardfs.flash_layout.FlashImage.read_partition`.
 
     When :meth:`attach_open_tl_bbm` or :meth:`attach_open_tl` has been called with a
     :class:`~opentl.tl_bbm.BlockMapBuild` or :class:`~opentl.open_tl.OpenTL`,

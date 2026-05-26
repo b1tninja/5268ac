@@ -4,7 +4,7 @@ and **BlockDev** slicing. **TL virtual replay** is implemented in :mod:`opentl`;
 :class:`~boardfs.registry.FsRegistry` holds :class:`~opentl.driver.LogicalOpenTLSession`
 after BBM attach.
 
-Layer A: ``mtdparts`` / :class:`~binwalker.extract.flash_layout.FlashImage`.
+Layer A: ``mtdparts`` / :class:`~boardfs.flash_layout.FlashImage`.
 Layer B: :mod:`opentl.tldisk` enumeration inside ``tlpart`` scan buffer.
 Layer C: ``ubi.mtd=`` parsing + raw UBI VID header scan.
 Layer D: :mod:`boardfs.squashfs_probe` for ``hsqs`` magic peek.
@@ -23,6 +23,19 @@ from boardfs.ext2_dissect import (
 )
 from boardfs.ext2_path import list_ext2_directory, normalize_ext2_path, read_ext2_regular_file
 from boardfs.flash import flash_image_from_cmdline, flash_image_from_cmdline_bytes
+from boardfs.flash_layout import (
+    FlashImage,
+    LayoutBuildResult,
+    MtdPartition,
+    build_layout_interactive,
+    build_partitions_from_mtdparts,
+    format_partition_table,
+    mtdparts_parsed_to_cmdline,
+    parse_flash_raw_layout_cli,
+    safe_extract_filename,
+    validate_against_printk_ranges,
+    write_partition_manifest,
+)
 from boardfs.mount_spec import RootSpec, parse_root_from_cmdline
 from boardfs.pipeline import fs_registry_from_nand_pipeline
 from boardfs.registry import FsRegistry
@@ -58,6 +71,9 @@ __all__ = [
     "BlockDev",
     "BlockSlice",
     "FsRegistry",
+    "FlashImage",
+    "LayoutBuildResult",
+    "MtdPartition",
     "Opentla4VolumeResult",
     "RootSpec",
     "SQUASHFS_MAGIC_LE",
@@ -78,11 +94,16 @@ __all__ = [
     "read_ext2_regular_file",
     "flash_image_from_cmdline",
     "flash_image_from_cmdline_bytes",
+    "build_layout_interactive",
+    "build_partitions_from_mtdparts",
+    "format_partition_table",
     "flash_plane_sector0_prefix_bytes",
     "fs_registry_from_nand_pipeline",
     "infer_chain_aware_virtual_tl_scan",
     "infer_ext2_opentla4_chain_aware",
     "iter_ubi_mtd_attach_specs",
+    "mtdparts_parsed_to_cmdline",
+    "parse_flash_raw_layout_cli",
     "linear_opentla4_bytes",
     "list_root_for_block_dev",
     "list_root_for_block_dev_with_meta",
@@ -92,6 +113,9 @@ __all__ = [
     "resolve_mountable_ext2_superblock_offset",
     "scan_ubi_vid_headers_in_bytes",
     "scan_ubi_vid_headers_on_block_dev",
+    "safe_extract_filename",
     "temporary_registry_from_physical_nand",
     "TranslateMode",
+    "validate_against_printk_ranges",
+    "write_partition_manifest",
 ]

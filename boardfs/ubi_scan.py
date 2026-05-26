@@ -1,9 +1,9 @@
 """
 Scan a raw **UBI-on-MTD** byte image for plausible **volume ID** headers (``UBI!``).
 
-This is **not** a full UBI volume table (no volume names, no LEB map). It reuses
-:class:`binwalker.ubi_carve` heuristics for offline triage. Named volumes require
-``ubinfo`` / ``ubi_reader`` / kernel attach (see :mod:`binwalker.extract.ubifs_decode`).
+This is **not** a full UBI volume table (no volume names, no LEB map). It uses
+local UBI media heuristics for offline triage. Named volumes require
+``ubinfo`` / ``ubi_reader`` / kernel attach.
 """
 
 from __future__ import annotations
@@ -12,7 +12,11 @@ from dataclasses import dataclass
 
 from boardfs.block import BlockDev, BlockSlice
 
-from binwalker.ubi_carve import (
+from boardfs.ubi_carve import (
+    UBI_EC_HDR_LEN,
+    UBI_EC_MAGIC_ASCII,
+    UBI_VID_HDR_LEN,
+    UBI_VID_MAGIC_ASCII,
     parse_ubi_vid_hdr_fields,
     plausible_ubi_vid_offsets,
     scan_magic_offsets,
@@ -33,7 +37,7 @@ def scan_ubi_vid_headers_in_bytes(
     erase_bytes: int = 131072,
 ) -> tuple[UbiVidHeaderHit, ...]:
     """
-    Return decoded VID headers at offsets that pass :func:`~binwalker.ubi_carve.plausible_ubi_vid_offsets`.
+    Return decoded VID headers at offsets that pass :func:`~boardfs.ubi_carve.plausible_ubi_vid_offsets`.
 
     ``erase_bytes`` must match the MTD erase block size for the UBI device (Pace OpenTL
     TL erase unit default is 128 KiB).
@@ -60,4 +64,12 @@ def scan_ubi_vid_headers_on_block_dev(
     return scan_ubi_vid_headers_in_bytes(data, erase_bytes=erase_bytes)
 
 
-__all__ = ["UbiVidHeaderHit", "scan_ubi_vid_headers_in_bytes", "scan_ubi_vid_headers_on_block_dev"]
+__all__ = [
+    "UBI_EC_HDR_LEN",
+    "UBI_EC_MAGIC_ASCII",
+    "UBI_VID_HDR_LEN",
+    "UBI_VID_MAGIC_ASCII",
+    "UbiVidHeaderHit",
+    "scan_ubi_vid_headers_in_bytes",
+    "scan_ubi_vid_headers_on_block_dev",
+]
