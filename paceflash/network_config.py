@@ -270,20 +270,58 @@ def render_readme_fragment(
 These files contain **per-device WAN credentials** cloned from gateway flash. Use only on
 hardware you own or are authorized to test. ISP terms may prohibit impersonating the CPE.
 
-## Install (router profile)
+## Generated files
 
-1. Copy PKI material to `{pki_dir}/` (`cacerts.pem`, `client.pem`, `client.key`; optional
-   `lightspeed.p12` is the raw NAND PKCS#12 for reference).
-2. `chmod 600 {pki_dir}/client.key`
-3. Install `wpa_supplicant-{interface}.conf` (e.g. `/etc/wpa_supplicant/wpa_supplicant-{interface}.conf`).
-4. Install drop-in under `/etc/systemd/system/wpa_supplicant@{interface}.service.d/override.conf`.
-5. Install `{interface}.network` under `/etc/systemd/network/`.
-6. `systemctl daemon-reload`
-7. `systemctl enable --now wpa_supplicant@{interface}.service`
-8. `systemctl restart systemd-networkd`
+| File | Install path | Purpose |
+|------|--------------|---------|
+| `pki/cacerts.pem` | `{pki_dir}/cacerts.pem` | ISP/operator EAP-TLS CA bundle |
+| `pki/client.pem` | `{pki_dir}/client.pem` | Device client certificate |
+| `pki/client.key` | `{pki_dir}/client.key` | Device private key; keep mode `0600` |
+| `pki/lightspeed.p12` | Do not need to install | Raw encrypted PKCS#12 kept for recovery/reference |
+| `wpa_supplicant-{interface}.conf` | `/etc/wpa_supplicant/wpa_supplicant-{interface}.conf` | Wired EAP-TLS supplicant config |
+| `wpa_supplicant@{interface}.service.d/override.conf` | `/etc/systemd/system/wpa_supplicant@{interface}.service.d/override.conf` | Forces `wpa_supplicant` into wired mode for `{interface}` |
+| `{interface}.network` | `/etc/systemd/network/{interface}.network` | systemd-networkd DHCP profile and modem-like DHCP options |
+
+## Install on a systemd-networkd router
+
+Run these from the generated directory:
+
+```bash
+sudo install -d -m 0755 {pki_dir} /etc/wpa_supplicant /etc/systemd/network /etc/systemd/system/wpa_supplicant@{interface}.service.d
+sudo install -m 0644 pki/cacerts.pem {pki_dir}/cacerts.pem
+sudo install -m 0644 pki/client.pem {pki_dir}/client.pem
+sudo install -m 0600 pki/client.key {pki_dir}/client.key
+sudo install -m 0644 wpa_supplicant-{interface}.conf /etc/wpa_supplicant/wpa_supplicant-{interface}.conf
+sudo install -m 0644 wpa_supplicant@{interface}.service.d/override.conf /etc/systemd/system/wpa_supplicant@{interface}.service.d/override.conf
+sudo install -m 0644 {interface}.network /etc/systemd/network/{interface}.network
+```
+
+Make sure no other network manager owns `{interface}`. On NetworkManager hosts, mark the
+interface unmanaged or use a networkd-only WAN profile. On netplan hosts, set the WAN
+renderer to `networkd`. Stop any standalone `dhclient`, `dhcpcd`, or distribution DHCP
+client attached to `{interface}`.
+
+Enable the services:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wpa_supplicant@{interface}.service
+sudo systemctl enable --now systemd-networkd.service
+sudo networkctl reload
+sudo networkctl reconfigure {interface}
+```
+
+If the link was already up with the wrong MAC, bring it down before reconfiguring:
+
+```bash
+sudo ip link set {interface} down
+sudo networkctl reconfigure {interface}
+sudo ip link set {interface} up
+```
 
 **Order:** wpa_supplicant must complete **EAP-TLS** before DHCP is useful. The `.network` unit
-should start after `wpa_supplicant@{interface}.service` (add `After=` in a drop-in if needed).
+should start after `wpa_supplicant@{interface}.service`; if DHCP races ahead of EAP, restart
+`systemd-networkd` after the supplicant reports `CTRL-EVENT-EAP-SUCCESS`.
 
 ## Parameter mapping (modem → Linux)
 
@@ -299,6 +337,28 @@ should start after `wpa_supplicant@{interface}.service` (add `After=` in a drop-
 | Max message size (opt 57) | `1500` via **SendOption** when `--modem-dhcp` |
 | V-I opts 124 / 125 (2Wire / BBF) | Not in `.network` — see **DHCP options not in systemd** below |
 
+## WPA supplicant notes
+
+`wpa_supplicant-{interface}.conf` uses wired EAP-TLS:
+
+- `ap_scan=0` because this is Ethernet, not Wi-Fi scanning.
+- `key_mgmt=IEEE8021X` and `eap=TLS` match the gateway's WAN EAPOL behavior.
+- `identity="{eap_identity or "?"}"` is normally the certificate CN, often the WAN MAC.
+- `ca_cert`, `client_cert`, and `private_key` point at `{pki_dir}` after installation.
+
+Use `journalctl -u wpa_supplicant@{interface}.service -f` while testing. The success marker is
+`CTRL-EVENT-EAP-SUCCESS`; DHCP will not work reliably before that.
+
+## systemd-networkd and DHCP notes
+
+`{interface}.network` sets `DHCP=ipv4` and, when available, clones the modem WAN MAC with
+`[Link] MACAddress={wan_mac or "(not set)"}`. This controls DHCP **chaddr** and is separate
+from the EAP identity and option 61 client identifier.
+
+The generated DHCP section sends `ClientIdentifier={dhcp_client_identifier or "(not set)"}`.
+With modem parity enabled, it also sends option 60 (`VendorClassIdentifier`), option 55
+(`RequestOptions`), and option 57 (`SendOption=57:uint16:1500`).
+
 ## DHCP options not in systemd-networkd
 
 Modem **REQUEST** packets also carry **option 124** (enterprise {_TWOWIRE_DHCP_ENTERPRISE} / 2Wire, often empty) and **option 125**
@@ -309,9 +369,12 @@ systemd-networkd has no first-class encoder for those TLV blobs; use **dhclient*
 
 ## Verify
 
+- `systemctl status wpa_supplicant@{interface}.service systemd-networkd.service`
+- `networkctl status {interface}`
+- `journalctl -u wpa_supplicant@{interface}.service -u systemd-networkd.service -b`
 - Compare DHCP DISCOVER **option 61** to modem capture (type `0x00` + ASCII client-id string).
 - **chaddr** must match the modem WAN MAC (`MACAddress` above); client-id string is separate.
-- After changing MAC: `ip link set {interface} down`, reinstall `.network`, `systemctl restart systemd-networkd`.
+- Capture with `tcpdump -ni {interface} -vvv ether proto 0x888e or port 67 or port 68`.
 """
 
 

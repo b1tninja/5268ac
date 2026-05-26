@@ -22,6 +22,7 @@ from boardfs.ext2_path import (
 
 from paceflash.board_info import dump_board_info
 from paceflash.board_param import dump_paramtool
+from paceflash.flash_patch import patch_trust_engcert_flash
 from paceflash.eapol_cert import dump_eapol_cert
 from paceflash.network_config import gen_network_config
 from paceflash.factory_params import dump_factory_params
@@ -1462,6 +1463,38 @@ See reference/linux_8021x_lightspeed.md.
         help=f"Output JSON cache path (default {_DEFAULT_CARRIER_INDEX})",
     )
 
+    pte = sub.add_parser(
+        "patch-trust-engcert",
+        help="Patch gw:trust_engcert in board_param env copies (immutable: writes new flash file)",
+    )
+    _add_global_flash_options(pte, suppress_if_unset=True)
+    _add_operands_arg(
+        pte,
+        metavar="[FLASH]",
+        help_text="Source flash dump (optional when using --flash PATH)",
+    )
+    pte.add_argument(
+        "--value",
+        choices=("true", "false"),
+        default="true",
+        help="trust_engcert value (default: true)",
+    )
+    pte.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        metavar="FILE",
+        help="Output flash dump path (original is never modified)",
+    )
+    pte.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        metavar="JSON",
+        help="Patch manifest JSON path (default: OUT.patch.json)",
+    )
+    pte.add_argument("--json", action="store_true")
+
     args = ap.parse_args(argv)
 
     if args.command == "build-carrier-index":
@@ -1480,7 +1513,12 @@ See reference/linux_8021x_lightspeed.md.
 
     if args.command == "ls":
         flash_path, ext2_path = _resolve_flash_and_path_operands(args, require_path=False)
-        if getattr(args, "debug", False):
+        if (
+            getattr(args, "debug", False)
+            or getattr(args, "no_ext2", False)
+            or getattr(args, "dump_tl_slice", None) is not None
+            or getattr(args, "no_nand_translate", False)
+        ):
             return _run_ls_inventory(args, flash_path)
         return _run_ls_path(args, flash_path, ext2_path=ext2_path)
 
@@ -1518,5 +1556,25 @@ See reference/linux_8021x_lightspeed.md.
     if args.command == "board-info":
         flash_path = _resolve_flash_path(args)
         return _run_board_info(args, flash_path)
+
+    if args.command == "patch-trust-engcert":
+        flash_path = _resolve_flash_path(args)
+        manifest = args.manifest
+        if manifest is None:
+            manifest = Path(str(args.out) + ".patch.json")
+        doc = patch_trust_engcert_flash(
+            flash_path,
+            value=args.value,
+            out_path=args.out,
+            manifest_path=manifest,
+        )
+        if args.json:
+            print(json.dumps(doc, indent=2))
+        else:
+            print(f"Wrote {args.out}")
+            print(f"Manifest {manifest}")
+            te = doc.get("patch") or {}
+            print(f"Patched {te.get('site_count', 0)} env site(s); keys: {te.get('keys_changed')}")
+        return 0
 
     return 2

@@ -10,6 +10,7 @@ from paceflash.fstab import (
     parse_fstab_from_extfs_image,
     read_fstab_text_from_extfs_image,
 )
+from paceflash.artifacts import iter_flash_corpus_artifacts
 
 if TYPE_CHECKING:
     from paceflash.inventory import build_inventory
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
 __all__ = [
     "FstabEntry",
     "build_inventory",
+    "iter_flash_corpus_artifacts",
     "parse_fstab",
     "parse_fstab_from_extfs_image",
     "read_fstab_text_from_extfs_image",

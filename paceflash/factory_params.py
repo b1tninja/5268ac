@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from boardfs.flash import flash_image_from_cmdline, flash_image_from_cmdline_bytes
-from binwalker.extract.flash_layout import FlashImage
+from boardfs.flash_layout import FlashImage
 from opentl.driver import TranslateMode
 from opentl import nand_bootstrap
 from unand.geometry import PACE_DEFAULT
@@ -60,8 +60,11 @@ _KNOWN_FACTORY_KEYS = frozenset(
         "mfg_timestamp",
         "srom",
         "factory_mode",
+        "trust_engcert",
     }
 )
+
+FACTORY_TRUST_ENGCERT_KEY = "trust_engcert"
 
 
 def _physical_pace_envelope(file_size: int) -> bool:
@@ -153,7 +156,8 @@ def _region_end(loader_bytes: bytes, start: int) -> int:
             while j < n and loader_bytes[j] in (0, 0xFF):
                 j += 1
             if j >= n:
-                return n
+                # Trailing NUL/0xFF padding to EOF — end factory block here
+                return i
             window = loader_bytes[i : min(i + 256, n)]
             if b"=" not in window and j - i > 4:
                 return i
@@ -247,6 +251,93 @@ def probe_factory_params(
         parsed["params"] = _redact_params(parsed["params"])
         parsed["redacted"] = True
     return parsed
+
+
+def patch_factory_trust_engcert(
+    loader: bytearray,
+    value: str,
+    *,
+    hint_offset: int | None = DEFAULT_FACTORY_HINT_OFFSET,
+) -> dict[str, Any]:
+    """
+    Set ``trust_engcert`` in the loader manufacturing ``key=value`` block.
+
+    Appends or updates the key in the factory defaults region (NAND **loader** MTD,
+    not ``tlpart`` board_param). Intended to survive factory/hard reset paths that
+    re-seed paramtool state from manufacturing data.
+    """
+    if value not in ("true", "false"):
+        raise ValueError("trust_engcert value must be exactly 'true' or 'false'")
+
+    parsed = parse_factory_params_from_loader(bytes(loader), hint_offset=hint_offset)
+    if not parsed.get("ok"):
+        return {
+            "ok": False,
+            "skipped": True,
+            "error": parsed.get("error", "factory block not found"),
+        }
+
+    off = int(parsed["offset"])
+    end = off + int(parsed["region_bytes"])
+    params = dict(parsed["params"])
+    old_val = params.get(FACTORY_TRUST_ENGCERT_KEY)
+
+    if old_val == value:
+        return {
+            "ok": True,
+            "unchanged": True,
+            "offset": off,
+            "region_bytes": parsed["region_bytes"],
+            "value": value,
+        }
+
+    if old_val is not None:
+        old_seg = f"{FACTORY_TRUST_ENGCERT_KEY}={old_val}".encode("ascii")
+        new_seg = f"{FACTORY_TRUST_ENGCERT_KEY}={value}".encode("ascii")
+        idx = loader.find(old_seg, off, end)
+        if idx < 0:
+            return {
+                "ok": False,
+                "error": f"{FACTORY_TRUST_ENGCERT_KEY} present in parse but segment not found",
+            }
+        if len(new_seg) != len(old_seg):
+            return {
+                "ok": False,
+                "error": f"in-place factory patch length mismatch: {len(old_seg)} vs {len(new_seg)}",
+            }
+        loader[idx : idx + len(old_seg)] = new_seg
+        return {
+            "ok": True,
+            "unchanged": False,
+            "offset": off,
+            "patch_offset": idx,
+            "patch_length": len(new_seg),
+            "old_value": old_val,
+            "new_value": value,
+        }
+
+    insert = b"\x00" + f"{FACTORY_TRUST_ENGCERT_KEY}={value}".encode("ascii") + b"\x00"
+    pad = 0
+    while end + pad < len(loader) and loader[end + pad] in (0, 0xFF):
+        pad += 1
+        if pad > 512:
+            break
+    if len(insert) > pad:
+        return {
+            "ok": False,
+            "error": f"factory block padding too small for {FACTORY_TRUST_ENGCERT_KEY} ({pad} B free)",
+        }
+    loader[end : end + len(insert)] = insert
+    return {
+        "ok": True,
+        "unchanged": False,
+        "offset": off,
+        "patch_offset": end,
+        "patch_length": len(insert),
+        "old_value": old_val,
+        "new_value": value,
+        "region_bytes_after": int(parsed["region_bytes"]) + len(insert),
+    }
 
 
 def dump_factory_params(

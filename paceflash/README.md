@@ -56,6 +56,7 @@ Inside **`shell`**, the prompt is **`paceflash:/$`** on the **`opentla4`** ext2 
 | **`shell`** | Interactive ext2 REPL; **`-c "…"`** for one-shot script. |
 | **`factory-params`** | Manufacturing block from **loader** MTD (`sn=`, `mac=`, `devkey=`, …). |
 | **`paramtool`** | Offline **`gw:*`** / `*_p12` keys from **`tlpart`** board_param store. |
+| **`patch-trust-engcert`** | Patch **`gw:trust_engcert`** → new flash dump ([`nand_patch_install.md`](../reference/nand_patch_install.md)). |
 | **`dump-eapol-cert`** | **`lightspeed_p12`** / **`device_p12`** → PEM (needs factory **`devkey`** + **`sn`**). |
 | **`gen-network-config`** | 802.1X router bundle: PKI, wpa_supplicant, systemd-networkd, DHCP modem parity (opt 61/60/55/57, MAC clone). |
 | **`dump-http-auth`** | HTTP realm map, factory **accesscode**, CMDB **`user`** table. |
@@ -175,5 +176,5 @@ pytest tests/test_opentla4_532678_mount.py -q --timeout=300
 ## See also
 
 - **[`opentl/README.md`](../opentl/README.md)** — BBM / NTL below **boardfs**  
-- **[`reference/tools.md`](../reference/tools.md)** — binwalker carve → **`paceflash ls`**  
+- **[`reference/tools.md`](../reference/tools.md)** — direct corpus ingest via **`paceflash.artifacts`**  
 - **[Root README](../README.md)** — workspace overview

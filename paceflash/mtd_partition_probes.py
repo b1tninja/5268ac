@@ -6,7 +6,7 @@ import re
 import struct
 from typing import Any
 
-from binwalker.extract.flash_layout import UBOOT_ENV_IMAGE_SIZES
+from boardfs.flash_layout import UBOOT_ENV_IMAGE_SIZES
 from uboot.env import parse_uboot_env_v1
 
 # fwupgrade.txt default for 5268-class captures
@@ -129,7 +129,7 @@ def run_mtd_partition_probes(
     mtdoops_record_size: int = DEFAULT_MTDOOPS_RECORD_SIZE,
 ) -> dict[str, Any]:
     """
-    Run probes on ``flash`` (:class:`~binwalker.extract.flash_layout.FlashImage`).
+    Run probes on ``flash`` (:class:`~boardfs.flash_layout.FlashImage`).
     """
     out: dict[str, Any] = {"warnings": []}
     names = {p.name for p in flash.partitions}
