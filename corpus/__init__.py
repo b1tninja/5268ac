@@ -1,7 +1,7 @@
 """
 ``corpus`` — SQLite-backed index and grep over dissected SquashFS trees / ELF symbols.
 
-CLI: ``python -m corpus`` (same flags as the legacy ``tools/squashfs_corpus_grep.py``).
+CLI: ``python -m corpus`` — index, search, and pkgstream-root ingest.
 """
 
 from __future__ import annotations

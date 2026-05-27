@@ -504,6 +504,12 @@ def cmd_build_index(repo: Path, args: argparse.Namespace) -> int:
                 dwarf=getattr(args, "dwarf", None) is not None,
                 jobs=max(1, int(getattr(args, "jobs", 1) or 1)),
                 sbom_dir=sbom_dir,
+                sbom_source=args.sbom_source,
+                sbom_mount_root=(
+                    Path(args.sbom_mount_root).expanduser().resolve()
+                    if getattr(args, "sbom_mount_root", None)
+                    else None
+                ),
                 syft_bin=args.syft_bin,
                 sbom_format=args.sbom_format,
                 display_base=repo,
@@ -596,6 +602,12 @@ def cmd_build_index(repo: Path, args: argparse.Namespace) -> int:
                     if sbom_dir is not None and collection_raw
                     else sbom_dir
                 ),
+                sbom_source=args.sbom_source,
+                sbom_mount_root=(
+                    Path(args.sbom_mount_root).expanduser().resolve()
+                    if getattr(args, "sbom_mount_root", None)
+                    else None
+                ),
                 syft_bin=args.syft_bin,
                 sbom_format=args.sbom_format,
                 display_base=repo,
@@ -642,6 +654,12 @@ def cmd_build_index(repo: Path, args: argparse.Namespace) -> int:
                     sbom_dir / idx.collection_slug_for_fs(collection_raw)
                     if sbom_dir is not None and collection_raw
                     else sbom_dir
+                ),
+                sbom_source=args.sbom_source,
+                sbom_mount_root=(
+                    Path(args.sbom_mount_root).expanduser().resolve()
+                    if getattr(args, "sbom_mount_root", None)
+                    else None
                 ),
                 syft_bin=args.syft_bin,
                 sbom_format=args.sbom_format,
@@ -823,8 +841,22 @@ def main() -> int:
         "--sbom-dir",
         metavar="DIR",
         default=None,
-        help="With --sbom: directory for materialized rootfs trees and SBOM JSON "
+        help="With --sbom: directory for SBOM JSON, temporary mounts, and materialized fallback trees "
         "(default work_corpus/sbom).",
+    )
+    ap.add_argument(
+        "--sbom-source",
+        choices=("auto", "mount", "materialize"),
+        default="auto",
+        help="With --sbom: auto tries a read-only SquashFS mount before materializing; "
+        "mount fails if mounting is unavailable; materialize uses the legacy extracted tree source.",
+    )
+    ap.add_argument(
+        "--sbom-mount-root",
+        metavar="DIR",
+        default=None,
+        help="With --sbom-source auto/mount: temporary mountpoint parent "
+        "(default <sbom-dir>/mounts). Requires container mount privileges.",
     )
     ap.add_argument(
         "--syft-bin",

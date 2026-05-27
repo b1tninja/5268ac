@@ -47,4 +47,6 @@ services:
       - /work/work_corpus/gateway_pkgstream_index_report.json
       - --sbom-dir
       - /work/work_corpus/sbom
+      - --sbom-source
+      - auto
       - --sbom

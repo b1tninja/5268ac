@@ -3,7 +3,7 @@ SQLite index for SquashFS images (via dissect) or **already-extracted** rootfs t
 text lines, ELF symbols, ELF section strings, plus **DT_SONAME** / **DT_NEEDED** from
 ``.dynamic`` for linker-resolution queries.
 
-Used by ``squashfs_corpus_grep.py`` with ``--db`` / ``--build-index``.
+Used by ``python -m corpus`` with ``--db`` / ``--build-index``.
 Blob ingest requires ``dissect.squashfs``; extracted-tree ingest needs only ``pyelftools``.
 """
 
@@ -2580,6 +2580,8 @@ def index_artifact(
     dwarf: bool = False,
     jobs: int = 1,
     sbom_dir: Optional[Path] = None,
+    sbom_source: str = "auto",
+    sbom_mount_root: Optional[Path] = None,
     syft_bin: str = "syft",
     sbom_format: str = "syft-json",
     progress: Optional[Callable[[str], None]] = None,
@@ -2635,42 +2637,95 @@ def index_artifact(
         result["materialized"] = materialize_status
         record_artifact_edge(conn, image_key, logical_path, metadata)
         if sbom_dir is not None:
-            from corpus.sbom import materialize_files, run_syft, safe_sbom_name
+            from corpus.sbom import (
+                materialize_files,
+                run_syft,
+                run_syft_from_squashfs_mount,
+                safe_sbom_name,
+            )
             from lib2spy.pkgstream_corpus import iter_squashfs_files, iter_squashfs_files_from_bytes
 
+            mode = sbom_source if sbom_source in {"auto", "mount", "materialize"} else "auto"
             tree_dir = Path(sbom_dir) / "sources" / safe_sbom_name(image_key, suffix="")
             sbom_path = Path(sbom_dir) / safe_sbom_name(image_key)
+            mount_sbom_path = Path(sbom_dir) / "mounted" / safe_sbom_name(image_key)
+            mount_root = (
+                Path(sbom_mount_root)
+                if sbom_mount_root is not None
+                else Path(sbom_dir) / "mounts"
+            )
             try:
-                if progress:
-                    progress(f"# syft materialize start {image_key} -> {_display_path(tree_dir, base=display_base)}")
-                sbom_started = time.monotonic()
-                files = (
-                    iter_squashfs_files(artifact_path)
-                    if artifact_path is not None
-                    else iter_squashfs_files_from_bytes(data)
-                )
-                materialized = materialize_files(files, tree_dir)
-                if progress:
-                    progress(
-                        f"# syft materialize done {image_key} "
-                        f"written={materialized.get('files_written')} reused={materialized.get('files_reused')} "
-                        f"elapsed={_format_duration(time.monotonic() - sbom_started)}"
+                sbom_result: Dict[str, Any]
+                mount_error: Optional[str] = None
+                if mode in {"auto", "mount"} and artifact_path is not None:
+                    if progress:
+                        progress(
+                            f"# syft mount start {image_key} -> "
+                            f"{_display_path(mount_sbom_path, base=display_base)}"
+                        )
+                    syft_started = time.monotonic()
+                    sbom_result = run_syft_from_squashfs_mount(
+                        artifact_path,
+                        mount_sbom_path,
+                        mount_root=mount_root,
+                        syft_bin=syft_bin,
+                        output_format=sbom_format,
                     )
-                    progress(f"# syft run start {image_key} -> {_display_path(sbom_path, base=display_base)}")
-                syft_started = time.monotonic()
-                sbom_result = run_syft(
-                    tree_dir,
-                    sbom_path,
-                    syft_bin=syft_bin,
-                    output_format=sbom_format,
-                )
-                if progress:
-                    cache = " cached" if sbom_result.get("cached") else ""
-                    progress(
-                        f"# syft run done{cache} {image_key} "
-                        f"elapsed={_format_duration(time.monotonic() - syft_started)}"
+                    if sbom_result.get("ok") or mode == "mount":
+                        if progress:
+                            cache = " cached" if sbom_result.get("cached") else ""
+                            progress(
+                                f"# syft mount run done{cache} {image_key} "
+                                f"elapsed={_format_duration(time.monotonic() - syft_started)}"
+                            )
+                    else:
+                        mount_error = str(sbom_result.get("error") or "mount unavailable")
+                        if progress:
+                            progress(f"# syft mount unavailable {image_key}: {mount_error}")
+                elif mode == "mount":
+                    sbom_result = {
+                        "ok": False,
+                        "error": "squashfs mount requires a materialized image path",
+                        "source_mode": "mount",
+                    }
+                else:
+                    sbom_result = {"ok": False, "error": "materialize fallback pending"}
+
+                if not sbom_result.get("ok") and mode != "mount":
+                    if progress:
+                        progress(f"# syft materialize start {image_key} -> {_display_path(tree_dir, base=display_base)}")
+                    sbom_started = time.monotonic()
+                    files = (
+                        iter_squashfs_files(artifact_path)
+                        if artifact_path is not None
+                        else iter_squashfs_files_from_bytes(data)
                     )
-                sbom_result["materialized"] = materialized
+                    materialized = materialize_files(files, tree_dir)
+                    if progress:
+                        progress(
+                            f"# syft materialize done {image_key} "
+                            f"written={materialized.get('files_written')} reused={materialized.get('files_reused')} "
+                            f"elapsed={_format_duration(time.monotonic() - sbom_started)}"
+                        )
+                        progress(f"# syft run start {image_key} -> {_display_path(sbom_path, base=display_base)}")
+                    syft_started = time.monotonic()
+                    sbom_result = run_syft(
+                        tree_dir,
+                        sbom_path,
+                        syft_bin=syft_bin,
+                        output_format=sbom_format,
+                        source_type="materialized-dir",
+                    )
+                    if progress:
+                        cache = " cached" if sbom_result.get("cached") else ""
+                        progress(
+                            f"# syft run done{cache} {image_key} "
+                            f"elapsed={_format_duration(time.monotonic() - syft_started)}"
+                        )
+                    sbom_result["materialized"] = materialized
+                    sbom_result["source_mode"] = "materialize"
+                    if mount_error:
+                        sbom_result["mount_error"] = mount_error
             except Exception as e:
                 sbom_result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
             result["sbom"] = sbom_result
@@ -2744,6 +2799,8 @@ def build_index_from_pkgstream(
     dwarf: bool = False,
     jobs: int = 1,
     sbom_dir: Optional[Path] = None,
+    sbom_source: str = "auto",
+    sbom_mount_root: Optional[Path] = None,
     syft_bin: str = "syft",
     sbom_format: str = "syft-json",
     display_base: Optional[Path] = None,
@@ -2790,6 +2847,8 @@ def build_index_from_pkgstream(
                     dwarf=dwarf,
                     jobs=jobs,
                     sbom_dir=sbom_dir,
+                    sbom_source=sbom_source,
+                    sbom_mount_root=sbom_mount_root,
                     syft_bin=syft_bin,
                     sbom_format=sbom_format,
                     progress=progress,
@@ -2836,6 +2895,8 @@ def build_index_from_pkgstream_root(
     dwarf: bool = False,
     jobs: int = 1,
     sbom_dir: Optional[Path] = None,
+    sbom_source: str = "auto",
+    sbom_mount_root: Optional[Path] = None,
     syft_bin: str = "syft",
     sbom_format: str = "syft-json",
     display_base: Optional[Path] = None,
@@ -2901,6 +2962,8 @@ def build_index_from_pkgstream_root(
                 if sbom_dir is not None
                 else None
             ),
+            sbom_source=sbom_source,
+            sbom_mount_root=sbom_mount_root,
             syft_bin=syft_bin,
             sbom_format=sbom_format,
             display_base=display_base,
@@ -2964,6 +3027,8 @@ def build_index_from_flash(
     max_strings_per_file: int = DEFAULT_MAX_STRINGS_PER_FILE,
     dwarf: bool = False,
     sbom_dir: Optional[Path] = None,
+    sbom_source: str = "auto",
+    sbom_mount_root: Optional[Path] = None,
     syft_bin: str = "syft",
     sbom_format: str = "syft-json",
     progress: Optional[Callable[[str], None]] = None,
@@ -2991,6 +3056,8 @@ def build_index_from_flash(
                     max_strings_per_file=max_strings_per_file,
                     dwarf=dwarf,
                     sbom_dir=sbom_dir,
+                    sbom_source=sbom_source,
+                    sbom_mount_root=sbom_mount_root,
                     syft_bin=syft_bin,
                     sbom_format=sbom_format,
                     progress=progress,

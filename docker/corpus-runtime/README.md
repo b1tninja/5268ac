@@ -74,6 +74,14 @@ Pkgstream collections are planned by release directory, so sibling config,
 CMS-certs, and EAPOL-certs carriers inherit the install carrier's firmware
 version collection.
 
+When `--sbom` is enabled, `--sbom-source auto` is the default. It first tries to
+run Syft against a temporary read-only SquashFS mount and falls back to the
+legacy materialized source tree if the container cannot mount. Use
+`--sbom-source mount` when you want mounting to be required, or
+`--sbom-source materialize` to force the old behavior. Mount mode needs Docker
+mount privileges, for example a privileged container or equivalent
+`CAP_SYS_ADMIN`/loop-device access.
+
 ## Pkgstream Mirror Cache
 
 The repository `pkgstreams` file is the source of truth for known gateway
