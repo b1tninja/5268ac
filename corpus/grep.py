@@ -17,17 +17,20 @@ Index mode:
   - ``--build-index --db PATH --flash FLASH.bin`` — Pace NAND/logical flash via paceflash.
   - ``--build-index --db PATH --image CARVED.bin`` — raw SquashFS blob(s) via dissect.
   - ``--build-index --from-extracted`` — already-unpacked trees under ``pkgstream_dissect_corpus/``.
+  - ``--build-index --buildroot TARGET/ --buildroot-profile 2011.11`` — stock Buildroot ``target/`` reference.
+  - ``--buildroot-diff --collection version:…`` — stock vs manufacturer paths (needs indexed Buildroot + firmware).
+  - ``--buildroot-origin PATH --collection version:…`` — classify one file.
   - ``--db PATH patterns…`` — grep the index (text + symbols + rodata strings).
 
 Examples:
-  python tools/squashfs_corpus_grep.py rwdata /rwdata/cm mount tmpfs
-  python tools/squashfs_corpus_grep.py --build-index --db cm.sqlite \\
+  python -m corpus rwdata /rwdata/cm mount tmpfs
+  python -m corpus --build-index --db cm.sqlite \\
       --collection firmware_11.5.1.532678/11.5.1.532678 \\
       --pkgstream firmware/.../install.pkgstream \\
       --pkgstream firmware/.../conf.pkgstream
-  python tools/squashfs_corpus_grep.py --build-index --db cm.sqlite \\
+  python -m corpus --build-index --db cm.sqlite \\
       --image carve/tlpart_squashfs_0x03ff5080_8a358306.bin
-  python tools/squashfs_corpus_grep.py --db cm.sqlite -i rwdata cmd
+  python -m corpus --db cm.sqlite -i rwdata cmd
 """
 from __future__ import annotations
 
@@ -338,6 +341,26 @@ def cmd_versions(repo: Path, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_index_status(repo: Path, args: argparse.Namespace) -> int:
+    from corpus import index_db as idx
+
+    conn = idx.connect_db(args.db)
+    summary = idx.index_progress_summary(conn)
+    recent = conn.execute(
+        "SELECT ingest_key, content_sha256, completed_at, metrics_json "
+        "FROM ingest_status WHERE status = 'completed' "
+        "ORDER BY completed_at DESC LIMIT ?",
+        (args.limit or 25,),
+    ).fetchall()
+    conn.close()
+    row = {"db": args.db, **summary, "recent_pkgstream_ingests": [dict(r) for r in recent]}
+    if args.jsonl:
+        print(json.dumps(row, ensure_ascii=False), flush=True)
+    else:
+        print(json.dumps(row, indent=2, sort_keys=True))
+    return 0
+
+
 def cmd_deps(repo: Path, args: argparse.Namespace) -> int:
     from corpus import index_db as idx
 
@@ -379,6 +402,238 @@ def cmd_children(repo: Path, args: argparse.Namespace) -> int:
     return 0
 
 
+def _sbom_root(repo: Path, args: argparse.Namespace) -> Path:
+    from corpus.paths import default_sbom_dir
+
+    if getattr(args, "sbom_dir", None):
+        return Path(args.sbom_dir).expanduser().resolve()
+    return default_sbom_dir(repo)
+
+
+def _resolve_db_path(repo: Path, args: argparse.Namespace) -> Path:
+    from corpus.paths import resolve_corpus_db_path
+
+    return resolve_corpus_db_path(repo, getattr(args, "db", None))
+
+
+def _require_db_file(repo: Path, args: argparse.Namespace) -> int:
+    from corpus.paths import LEGACY_CORPUS_DB_RELATIVE, preferred_corpus_db_path
+
+    path = _resolve_db_path(repo, args)
+    args.db = str(path)
+    if path.is_file():
+        return 0
+    print(f"Corpus database not found: {path}", file=sys.stderr)
+    print(f"  Expected default: {preferred_corpus_db_path(repo)}", file=sys.stderr)
+    print(f"  Legacy path:      {repo / LEGACY_CORPUS_DB_RELATIVE}", file=sys.stderr)
+    print(
+        "  Build: python -m corpus --build-index --pkgstream-root gateway.c01.sbcglobal.net",
+        file=sys.stderr,
+    )
+    return 2
+
+
+def _uses_index_db(args: argparse.Namespace) -> bool:
+    if args.build_index:
+        return True
+    if getattr(args, "explain_library", None):
+        return True
+    if getattr(args, "duplicates", False):
+        return True
+    if getattr(args, "file_info", None):
+        return True
+    if getattr(args, "versions", False):
+        return True
+    if getattr(args, "index_status", False):
+        return True
+    if getattr(args, "deps", None):
+        return True
+    if getattr(args, "format_summary", False):
+        return True
+    if getattr(args, "dwarf", None) not in (None, ""):
+        return True
+    if getattr(args, "children", None):
+        return True
+    if getattr(args, "sbom_for", None):
+        return True
+    if getattr(args, "buildroot_diff", False):
+        return True
+    if getattr(args, "buildroot_origin", None):
+        return True
+    if getattr(args, "list_buildroot", False):
+        return True
+    if args.patterns:
+        return True
+    return False
+
+
+def _collection_arg(args: argparse.Namespace) -> Optional[str]:
+    from corpus import vuln
+
+    return vuln.resolve_collection_slug_arg(getattr(args, "collection", None))
+
+
+def cmd_list_sboms(repo: Path, args: argparse.Namespace) -> int:
+    from corpus import vuln
+
+    sbom_root = _sbom_root(repo, args)
+    coll = _collection_arg(args)
+    entries = list(
+        vuln.iter_sbom_entries(
+            sbom_root,
+            collection_slug=coll,
+            term=getattr(args, "sbom_term", None),
+        )
+    )
+    rows = vuln.entries_to_rows(entries, repo_root=repo)
+    if not rows:
+        print(f"# no SBOMs under {sbom_root}", file=sys.stderr)
+        if coll:
+            print(f"# collection filter: {coll}", file=sys.stderr)
+        return 1
+    _print_rows(rows, jsonl=args.jsonl)
+    if not args.jsonl:
+        print(f"# {len(rows)} SBOM(s); scan with: python -m corpus --grype --grype-sbom <path>", file=sys.stderr)
+    return 0
+
+
+def _resolve_grype_sbom_paths(repo: Path, args: argparse.Namespace) -> List[Path]:
+    from corpus import index_db as idx
+    from corpus import vuln
+
+    sbom_root = _sbom_root(repo, args)
+    coll = _collection_arg(args)
+    explicit = [Path(p).expanduser().resolve() for p in (getattr(args, "grype_sbom", None) or [])]
+
+    paths: List[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        key = str(path.resolve())
+        if path.is_file() and key not in seen:
+            seen.add(key)
+            paths.append(path.resolve())
+
+    for p in explicit:
+        add(p)
+
+    sbom_for = getattr(args, "sbom_for", None)
+    if sbom_for:
+        conn = idx.connect_db(args.db)
+        like = f"%{sbom_for}%"
+        if coll:
+            prefix = idx.collection_image_prefix(coll)
+            rows = conn.execute(
+                "SELECT path FROM images WHERE path LIKE ? AND path LIKE ?",
+                (like, f"{prefix}%"),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT path FROM images WHERE path LIKE ?", (like,)).fetchall()
+        conn.close()
+        for row in rows:
+            for p in vuln.sbom_paths_for_image_keys([str(row["path"])], sbom_root, collection_slug=coll):
+                add(p)
+
+    if getattr(args, "grype_all", False):
+        for ent in vuln.iter_sbom_entries(sbom_root, collection_slug=coll, term=getattr(args, "sbom_term", None)):
+            add(ent.path)
+
+    return paths
+
+
+def cmd_grype(repo: Path, args: argparse.Namespace) -> int:
+    from corpus import vuln
+
+    sbom_root = _sbom_root(repo, args)
+    coll = _collection_arg(args)
+
+    if getattr(args, "grype_summary", False):
+        entries = list(
+            vuln.iter_sbom_entries(
+                sbom_root,
+                collection_slug=coll,
+                term=getattr(args, "sbom_term", None),
+            )
+        )
+        rows = []
+        for ent in entries:
+            if ent.grype_report is None or not ent.grype_report.is_file():
+                continue
+            summary = ent.grype_summary or vuln.summarize_grype_report(ent.grype_report)
+            rows.append(
+                {
+                    "sbom": str(ent.path),
+                    "grype_report": str(ent.grype_report),
+                    "collection": ent.collection_slug,
+                    "source_hint": ent.source_hint,
+                    **summary,
+                }
+            )
+        if not rows:
+            print("# no Grype reports found (.grype.json beside .syft.json)", file=sys.stderr)
+            return 1
+        _print_rows(rows, jsonl=args.jsonl)
+        return 0
+
+    try:
+        sbom_paths = _resolve_grype_sbom_paths(repo, args)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+    if not sbom_paths:
+        print(
+            "No SBOM files matched; use --grype-sbom PATH, --sbom-for TERM (with --db), "
+            "or --collection version:X with --grype-all.",
+            file=sys.stderr,
+        )
+        return 2
+
+    report_dir = (
+        Path(args.grype_report_dir).expanduser().resolve()
+        if getattr(args, "grype_report_dir", None)
+        else None
+    )
+    rc = 0
+    for sbom_path in sbom_paths:
+        report_path = None
+        if report_dir is not None:
+            report_path = report_dir / (sbom_path.stem.replace(".syft", "") + ".grype.json")
+        elif getattr(args, "grype_report", None):
+            report_path = Path(args.grype_report).expanduser().resolve()
+            if len(sbom_paths) > 1:
+                report_path = report_path.parent / f"{sbom_path.stem}.grype.json"
+        else:
+            ent = vuln.SbomEntry(path=sbom_path)
+            report_path = ent.default_grype_report_path()
+
+        result = vuln.run_grype(
+            sbom_path,
+            grype_bin=args.grype_bin,
+            output_format=args.grype_output,
+            report_path=report_path if args.grype_output == "json" else None,
+            fail_on=args.grype_fail_on or None,
+            db_update=getattr(args, "grype_db_update", False),
+            quiet=getattr(args, "grype_quiet", False),
+            only_fixed=getattr(args, "grype_only_fixed", False),
+            skip_existing=getattr(args, "grype_skip_existing", False),
+            timeout_s=int(getattr(args, "grype_timeout", 900)),
+        )
+        if args.jsonl:
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+        else:
+            print(f"# grype {sbom_path.name}", file=sys.stderr)
+            if result.get("table"):
+                print(result["table"], end="" if str(result["table"]).endswith("\n") else "\n")
+            elif result.get("summary"):
+                print(json.dumps(result["summary"], indent=2, sort_keys=True))
+            elif result.get("error"):
+                print(result["error"], file=sys.stderr)
+        if not result.get("ok"):
+            rc = 1
+    return rc
+
+
 def cmd_index_search(repo: Path, args: argparse.Namespace) -> int:
     from corpus import index_db as idx
 
@@ -415,9 +670,99 @@ def cmd_index_search(repo: Path, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_buildroot_diff(repo: Path, args: argparse.Namespace) -> int:
+    from corpus import buildroot as br
+    from corpus import index_db as idx
+
+    if not args.collection:
+        print("--buildroot-diff requires --collection", file=sys.stderr)
+        return 2
+    profile = args.buildroot_profile or "2011.11"
+    conn = idx.connect_db(args.db)
+    try:
+        report = br.diff_collection_vs_buildroot(conn, args.collection, profile)
+    except LookupError as exc:
+        print(str(exc), file=sys.stderr)
+        conn.close()
+        return 1
+    conn.close()
+    if args.jsonl:
+        print(json.dumps(report.to_dict(), ensure_ascii=False))
+    else:
+        c = report.to_dict()["counts"]
+        print(
+            f"buildroot:{report.buildroot_profile} vs collection:{report.collection}\n"
+            f"  stock: {c['stock']}\n"
+            f"  vendor_modified: {c['vendor_modified']}\n"
+            f"  vendor_path: {c['vendor_path']}\n"
+            f"  buildroot_only: {c['buildroot_only']}"
+        )
+        samples = report.to_dict()["samples"]
+        for label in ("vendor_path", "vendor_modified", "stock"):
+            paths = samples.get(label) or []
+            if paths:
+                print(f"\n=== {label} (sample) ===")
+                for p in paths[:20]:
+                    print(f"  {p}")
+    return 0
+
+
+def cmd_buildroot_origin(repo: Path, args: argparse.Namespace) -> int:
+    from corpus import buildroot as br
+    from corpus import index_db as idx
+
+    if not args.collection:
+        print("--buildroot-origin requires --collection", file=sys.stderr)
+        return 2
+    profile = args.buildroot_profile or "2011.11"
+    conn = idx.connect_db(args.db)
+    try:
+        payload = br.lookup_path_origin(
+            conn, args.collection, args.buildroot_origin, profile
+        )
+    except LookupError as exc:
+        print(str(exc), file=sys.stderr)
+        conn.close()
+        return 1
+    conn.close()
+    if args.jsonl:
+        print(json.dumps(payload, ensure_ascii=False))
+    else:
+        print(
+            f"{payload['path']}: {payload['origin']} "
+            f"(collection:{payload['collection']} buildroot:{payload['buildroot_profile']})"
+        )
+        if payload.get("firmware_sha256"):
+            print(f"  firmware sha256: {payload['firmware_sha256']}")
+        if payload.get("buildroot_sha256"):
+            print(f"  buildroot sha256: {payload['buildroot_sha256']}")
+    return 0
+
+
+def cmd_list_buildroot(repo: Path, args: argparse.Namespace) -> int:
+    from corpus import buildroot as br
+    from corpus import index_db as idx
+
+    conn = idx.connect_db(args.db)
+    rows = br.list_buildroot_profiles(conn)
+    conn.close()
+    if args.jsonl:
+        for row in rows:
+            print(json.dumps(row, ensure_ascii=False))
+    elif not rows:
+        print("No buildroot:* images in index (use --build-index --buildroot TARGET/)")
+    else:
+        for row in rows:
+            print(
+                f"{row['image_key']}\tfiles={row['file_count']}\tindexed={row['indexed_at']}"
+            )
+    return 0
+
+
 def cmd_build_index(repo: Path, args: argparse.Namespace) -> int:
     from corpus import index_db as idx
 
+    buildroot_list = getattr(args, "buildroot", None) or []
     pkg_list = getattr(args, "pkgstream", None) or []
     pkg_root_list = getattr(args, "pkgstream_root", None) or []
     flash_list = getattr(args, "flash", None) or []
@@ -439,8 +784,62 @@ def cmd_build_index(repo: Path, args: argparse.Namespace) -> int:
             except FileNotFoundError:
                 pass
 
+    if buildroot_list:
+        try:
+            import elftools  # noqa: F401
+        except ImportError:
+            print("Missing pyelftools — pip install pyelftools.", file=sys.stderr)
+            return 2
+        if pkg_list or pkg_root_list or from_extracted or flash_list:
+            print(
+                "Use --buildroot without --pkgstream, --pkgstream-root, --flash, or --from-extracted.",
+                file=sys.stderr,
+            )
+            return 2
+        from corpus import buildroot as br
+
+        conn = idx.connect_db(args.db)
+        symtab = getattr(args, "symtab", False)
+        max_bytes = int(args.max_file_mb * 1024 * 1024) if args.max_file_mb > 0 else 10**15
+        profile = args.buildroot_profile or "2011.11"
+
+        def prog_br(msg: str) -> None:
+            print(msg, file=sys.stderr)
+
+        failures = 0
+        for br_arg in buildroot_list:
+            target = Path(br_arg).expanduser().resolve()
+            if not target.is_dir():
+                print(f"Not a directory: {target}", file=sys.stderr)
+                conn.close()
+                return 2
+            prog_br(f"# buildroot index profile={profile} root={target}")
+            res = br.build_index_for_buildroot(
+                conn,
+                target,
+                profile,
+                max_file_bytes=max_bytes,
+                skip_suffixes=not args.no_skip_suffixes,
+                symtab=symtab,
+                min_string_len=args.min_string_len,
+                max_strings_per_file=args.max_strings_per_file,
+                dwarf=getattr(args, "dwarf", None) is not None,
+                progress=prog_br,
+            )
+            if not res.get("ok"):
+                prog_br(f"FAILED: {res.get('error')}")
+                failures += 1
+            else:
+                prog_br(
+                    f"# indexed {res.get('buildroot_image_key')} "
+                    f"files={res.get('files_seen', 0)}"
+                )
+        conn.close()
+        prog_br(f"# database {args.db}")
+        return 1 if failures else 0
+
     if pkg_root_list:
-        if pkg_list or from_extracted or args.image or flash_list:
+        if pkg_list or from_extracted or args.image or flash_list or buildroot_list:
             print(
                 "Use --pkgstream-root without --pkgstream, --from-extracted, --image, or --flash.",
                 file=sys.stderr,
@@ -785,7 +1184,14 @@ def main() -> int:
     ap.add_argument(
         "--db",
         metavar="PATH",
-        help="SQLite index path (search or --build-index).",
+        default=None,
+        help="SQLite index path (default: work_corpus/corpus/index.sqlite; "
+        "falls back to work_corpus/corpus_index.sqlite if only legacy exists).",
+    )
+    ap.add_argument(
+        "--migrate-db",
+        action="store_true",
+        help="Move work_corpus/corpus_index.sqlite to work_corpus/corpus/index.sqlite and exit.",
     )
     ap.add_argument(
         "--build-index",
@@ -802,6 +1208,36 @@ def main() -> int:
         action="store_true",
         help="With --build-index: index unpacked rootfs dirs (each --image or default "
         "work_corpus/pkgstream_dissect_corpus/*). Does not require dissect.squashfs.",
+    )
+    ap.add_argument(
+        "--buildroot",
+        metavar="TARGET",
+        action="append",
+        default=[],
+        help="With --build-index: index a Buildroot target/ tree as buildroot:<profile> reference "
+        "(repeatable). Use with --buildroot-profile (default 2011.11).",
+    )
+    ap.add_argument(
+        "--buildroot-profile",
+        metavar="PROFILE",
+        default=None,
+        help="Buildroot reference tag for --buildroot / --buildroot-diff (e.g. 2011.11, 2013.05).",
+    )
+    ap.add_argument(
+        "--buildroot-diff",
+        action="store_true",
+        help="Compare --collection firmware files to indexed buildroot:<profile> by path and sha256.",
+    )
+    ap.add_argument(
+        "--buildroot-origin",
+        metavar="PATH",
+        default=None,
+        help="Classify one firmware path (e.g. bin/busybox) vs Buildroot; requires --collection.",
+    )
+    ap.add_argument(
+        "--list-buildroot",
+        action="store_true",
+        help="List indexed buildroot:* images in --db.",
     )
     ap.add_argument(
         "--pkgstream",
@@ -1010,6 +1446,11 @@ def main() -> int:
         help="With --db only: list indexed version evidence.",
     )
     ap.add_argument(
+        "--index-status",
+        action="store_true",
+        help="With --db only: show resume counters (completed pkgstreams, squashfs analyses, images).",
+    )
+    ap.add_argument(
         "--deps",
         metavar="LIB_OR_PATH",
         default=None,
@@ -1026,29 +1467,145 @@ def main() -> int:
         default=None,
         help="With --db only: show artifact parent/child edges such as ext2 file -> SquashFS sysimage.",
     )
+    ap.add_argument(
+        "--list-sboms",
+        action="store_true",
+        help="List Syft SBOM JSON files under --sbom-dir (default work_corpus/sbom). "
+        "Use with --collection and/or --sbom-term.",
+    )
+    ap.add_argument(
+        "--sbom-term",
+        metavar="TEXT",
+        default=None,
+        help="Filter --list-sboms / --grype targets by substring in SBOM filename or source hint.",
+    )
+    ap.add_argument(
+        "--sbom-for",
+        metavar="IMAGE_SUBSTR",
+        default=None,
+        help="Resolve SBOM file(s) for corpus image path(s) matching this substring "
+        "(e.g. squashfs_0x00368538). Uses the default corpus DB unless --db is set.",
+    )
+    ap.add_argument(
+        "--grype",
+        action="store_true",
+        help="Run grype against one or more SBOMs (--grype-sbom, --sbom-for, or --collection --grype-all).",
+    )
+    ap.add_argument(
+        "--grype-all",
+        action="store_true",
+        help="With --grype: scan every SBOM in the selected --collection (or entire --sbom-dir).",
+    )
+    ap.add_argument(
+        "--grype-sbom",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="With --grype: explicit .syft.json path (repeatable).",
+    )
+    ap.add_argument(
+        "--grype-summary",
+        action="store_true",
+        help="Summarize existing .grype.json reports (no scan). Filter with --collection / --sbom-term.",
+    )
+    ap.add_argument(
+        "--grype-bin",
+        metavar="PATH",
+        default="grype",
+        help="Grype executable (default grype).",
+    )
+    ap.add_argument(
+        "--grype-output",
+        choices=("table", "json", "cyclonedx-json"),
+        default="table",
+        help="Grype output format (default table). Use json to write --grype-report / sidecar .grype.json.",
+    )
+    ap.add_argument(
+        "--grype-report",
+        metavar="PATH",
+        default=None,
+        help="With --grype-output json: write Grype JSON report (single SBOM only unless multiple .grype.json names are derived).",
+    )
+    ap.add_argument(
+        "--grype-report-dir",
+        metavar="DIR",
+        default=None,
+        help="With --grype-output json and multiple SBOMs: directory for per-SBOM .grype.json files.",
+    )
+    ap.add_argument(
+        "--grype-fail-on",
+        choices=("none", "negligible", "low", "medium", "high", "critical"),
+        default=None,
+        help="Pass --fail-on to grype (non-zero exit when matching vulns are present).",
+    )
+    ap.add_argument(
+        "--grype-db-update",
+        action="store_true",
+        help="Pass --db-update to grype before scanning.",
+    )
+    ap.add_argument(
+        "--grype-only-fixed",
+        action="store_true",
+        help="Pass --only-fixed to grype.",
+    )
+    ap.add_argument(
+        "--grype-skip-existing",
+        action="store_true",
+        help="Skip grype when a .grype.json report exists and is newer than the SBOM.",
+    )
+    ap.add_argument(
+        "--grype-quiet",
+        action="store_true",
+        help="Pass -q to grype.",
+    )
+    ap.add_argument(
+        "--grype-timeout",
+        type=int,
+        default=900,
+        metavar="SEC",
+        help="Grype subprocess timeout per SBOM (default 900).",
+    )
 
     args = ap.parse_args()
 
-    if args.build_index:
-        if not args.db:
-            print("--build-index requires --db", file=sys.stderr)
+    if getattr(args, "migrate_db", False):
+        from corpus.paths import migrate_legacy_corpus_db
+
+        dest = migrate_legacy_corpus_db(repo)
+        print(str(dest))
+        return 0
+
+    if _uses_index_db(args):
+        from corpus.paths import ensure_corpus_db_parent
+
+        db_path = _resolve_db_path(repo, args)
+        args.db = str(db_path)
+        if args.build_index:
+            ensure_corpus_db_parent(db_path)
+        elif _require_db_file(repo, args) != 0:
             return 2
+
+    if args.build_index:
         need_image = (
             not (getattr(args, "pkgstream", None) or [])
             and not (getattr(args, "pkgstream_root", None) or [])
             and not (getattr(args, "flash", None) or [])
+            and not (getattr(args, "buildroot", None) or [])
             and not args.from_extracted
         )
         if need_image and not args.image:
             print(
                 "--build-index requires --image unless --pkgstream, --pkgstream-root, --flash, "
-                "or --from-extracted is set.",
+                "--buildroot, or --from-extracted is set.",
                 file=sys.stderr,
             )
             return 2
         return cmd_build_index(repo, args)
 
-    if args.db:
+    if _uses_index_db(args) and args.patterns:
+        return cmd_index_search(repo, args)
+
+    if _uses_index_db(args) and not args.patterns:
         if getattr(args, "explain_library", None):
             return cmd_explain_library(repo, args)
         if getattr(args, "duplicates", False):
@@ -1057,6 +1614,8 @@ def main() -> int:
             return cmd_file_info(repo, args)
         if getattr(args, "versions", False):
             return cmd_versions(repo, args)
+        if getattr(args, "index_status", False):
+            return cmd_index_status(repo, args)
         if getattr(args, "deps", None):
             return cmd_deps(repo, args)
         if getattr(args, "format_summary", False):
@@ -1065,16 +1624,23 @@ def main() -> int:
             return cmd_dwarf(repo, args)
         if getattr(args, "children", None):
             return cmd_children(repo, args)
-        if not args.patterns:
-            print(
-                "Search mode requires at least one pattern or an inspection flag.",
-                file=sys.stderr,
-            )
-            return 2
-        return cmd_index_search(repo, args)
+        if getattr(args, "list_buildroot", False):
+            return cmd_list_buildroot(repo, args)
+        if getattr(args, "buildroot_diff", False):
+            return cmd_buildroot_diff(repo, args)
+        if getattr(args, "buildroot_origin", None):
+            return cmd_buildroot_origin(repo, args)
+
+    if getattr(args, "list_sboms", False):
+        return cmd_list_sboms(repo, args)
+    if getattr(args, "grype", False) or getattr(args, "grype_summary", False):
+        return cmd_grype(repo, args)
 
     if not args.patterns:
-        print("Provide patterns, or use --build-index with --db and --image.", file=sys.stderr)
+        print(
+            "Provide patterns, or use --build-index (default DB under work_corpus/corpus/).",
+            file=sys.stderr,
+        )
         return 2
 
     return cmd_fs_grep(repo, args)

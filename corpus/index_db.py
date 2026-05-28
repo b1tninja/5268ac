@@ -3,7 +3,7 @@ SQLite index for SquashFS images (via dissect) or **already-extracted** rootfs t
 text lines, ELF symbols, ELF section strings, plus **DT_SONAME** / **DT_NEEDED** from
 ``.dynamic`` for linker-resolution queries.
 
-Used by ``python -m corpus`` with ``--db`` / ``--build-index``.
+Used by ``python -m corpus`` (default DB: ``work_corpus/corpus/index.sqlite``).
 Blob ingest requires ``dissect.squashfs``; extracted-tree ingest needs only ``pyelftools``.
 """
 
@@ -585,6 +585,21 @@ def create_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_analysis_status_lookup
           ON analysis_status(image_path, sha256, analysis_version, options_hash, status);
+
+        CREATE TABLE IF NOT EXISTS ingest_status (
+          ingest_key TEXT NOT NULL,
+          content_sha256 TEXT NOT NULL,
+          analysis_version TEXT NOT NULL,
+          options_hash TEXT NOT NULL,
+          status TEXT NOT NULL,
+          started_at TEXT,
+          completed_at TEXT,
+          metrics_json TEXT,
+          error TEXT,
+          PRIMARY KEY (ingest_key, analysis_version, options_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ingest_status_lookup
+          ON ingest_status(ingest_key, content_sha256, analysis_version, options_hash, status);
         """
     )
     conn.commit()
@@ -689,6 +704,127 @@ def _mark_analysis_started(
         (image_path, sha256, size_bytes, ANALYSIS_VERSION, options_hash, "running", _utc_now(), None, None, None),
     )
     conn.commit()
+
+
+def _index_run_options_hash(
+    *,
+    max_file_bytes: int,
+    skip_suffixes: bool,
+    symtab: bool,
+    string_sections: frozenset[str],
+    min_string_len: int,
+    max_strings_per_file: int,
+    dwarf: bool,
+) -> str:
+    """Hash of indexing options for pkgstream-carrier resume (index only; SBOM is separate)."""
+    payload = {
+        "max_file_bytes": max_file_bytes,
+        "skip_suffixes": skip_suffixes,
+        "symtab": symtab,
+        "string_sections": sorted(string_sections),
+        "min_string_len": min_string_len,
+        "max_strings_per_file": max_strings_per_file,
+        "dwarf": dwarf,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _completed_ingest_row(
+    conn: sqlite3.Connection,
+    *,
+    ingest_key: str,
+    content_sha256: str,
+    options_hash: str,
+) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM ingest_status "
+        "WHERE ingest_key = ? AND content_sha256 = ? "
+        "AND analysis_version = ? AND options_hash = ? AND status = 'completed'",
+        (ingest_key, content_sha256, ANALYSIS_VERSION, options_hash),
+    ).fetchone()
+
+
+def _mark_ingest_completed(
+    conn: sqlite3.Connection,
+    *,
+    ingest_key: str,
+    content_sha256: str,
+    options_hash: str,
+    metrics: dict[str, Any],
+) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO ingest_status("
+        "ingest_key, content_sha256, analysis_version, options_hash, status, started_at, completed_at, metrics_json, error"
+        ") VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            ingest_key,
+            content_sha256,
+            ANALYSIS_VERSION,
+            options_hash,
+            "completed",
+            None,
+            _utc_now(),
+            json.dumps(metrics, sort_keys=True, default=str),
+            None,
+        ),
+    )
+    conn.commit()
+
+
+def pkgstream_ingest_key(pkgstream_path: Path, collection_slug: Optional[str] = None) -> str:
+    base = str(Path(pkgstream_path).resolve())
+    if collection_slug:
+        return f"{collection_image_prefix(collection_slug)}pkgstream_file:{base}"
+    return f"pkgstream_file:{base}"
+
+
+def _analysis_skip_result(
+    conn: sqlite3.Connection,
+    *,
+    image_path: str,
+    sha256: str,
+    size_bytes: int,
+    options_hash: str,
+    progress: Optional[Callable[[str], None]] = None,
+    label: str = "artifact",
+) -> Optional[Dict[str, Any]]:
+    row = _completed_analysis_row(
+        conn,
+        image_path=image_path,
+        sha256=sha256,
+        size_bytes=size_bytes,
+        options_hash=options_hash,
+    )
+    if row is None:
+        return None
+    metrics = json.loads(row["metrics_json"] or "{}")
+    if progress:
+        progress(
+            f"# {label} index skip completed {image_path} "
+            f"analysis={ANALYSIS_VERSION} options={options_hash[:12]}"
+        )
+    return {
+        "ok": True,
+        "skipped": True,
+        "reason": "analysis_completed",
+        "analysis_version": ANALYSIS_VERSION,
+        "options_hash": options_hash,
+        "path": image_path,
+        **metrics,
+    }
+
+
+def index_progress_summary(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """Resume-oriented counts from ``analysis_status`` and ``ingest_status``."""
+    row = conn.execute(
+        "SELECT "
+        "(SELECT COUNT(*) FROM images) AS images, "
+        "(SELECT COUNT(*) FROM analysis_status WHERE status = 'completed') AS analyses_completed, "
+        "(SELECT COUNT(*) FROM analysis_status WHERE status = 'running') AS analyses_running, "
+        "(SELECT COUNT(*) FROM ingest_status WHERE status = 'completed') AS pkgstreams_completed, "
+        "(SELECT COUNT(*) FROM ingest_status WHERE status = 'running') AS pkgstreams_running"
+    ).fetchone()
+    return dict(row) if row is not None else {}
 
 
 def _mark_analysis_completed(
@@ -1945,29 +2081,17 @@ def build_index_for_image(
         max_strings_per_file=max_strings_per_file,
         dwarf=dwarf,
     )
-    completed = _completed_analysis_row(
+    skipped = _analysis_skip_result(
         conn,
         image_path=ipath,
         sha256=sha,
         size_bytes=size_b,
         options_hash=options_hash,
+        progress=progress,
+        label="squashfs",
     )
-    if completed is not None:
-        metrics = json.loads(completed["metrics_json"] or "{}")
-        if progress:
-            progress(
-                f"# squashfs index skip completed {ipath} "
-                f"analysis={ANALYSIS_VERSION} options={options_hash[:12]} files={metrics.get('files_seen')}"
-            )
-        return {
-            "ok": True,
-            "skipped": True,
-            "reason": "analysis_completed",
-            "analysis_version": ANALYSIS_VERSION,
-            "options_hash": options_hash,
-            "path": ipath,
-            **metrics,
-        }
+    if skipped is not None:
+        return skipped
 
     delete_image_by_path(conn, ipath)
     _mark_analysis_started(
@@ -2264,11 +2388,33 @@ def index_single_blob_as_image(
     if len(data) > eff_max:
         return {"ok": False, "error": f"blob {len(data)} B exceeds --max-file-mb limit"}
 
-    delete_image_by_path(conn, image_key)
     sha = hashlib.sha256(data).hexdigest()
+    size_b = len(data)
+    options_hash = _analysis_options_hash(
+        max_file_bytes=max_file_bytes,
+        skip_suffixes=skip_suffixes,
+        symtab=symtab,
+        string_sections=sections,
+        min_string_len=min_string_len,
+        max_strings_per_file=max_strings_per_file,
+        dwarf=dwarf,
+    )
+    skipped = _analysis_skip_result(
+        conn,
+        image_path=image_key,
+        sha256=sha,
+        size_bytes=size_b,
+        options_hash=options_hash,
+        progress=progress,
+        label="blob",
+    )
+    if skipped is not None:
+        return skipped
+
+    delete_image_by_path(conn, image_key)
     cur = conn.execute(
         "INSERT INTO images(path, sha256, size_bytes, file_count, indexed_at) VALUES (?,?,?,?,?)",
-        (image_key, sha, len(data), 0, _utc_now()),
+        (image_key, sha, size_b, 0, _utc_now()),
     )
     image_id = cur.lastrowid
     assert image_id is not None
@@ -2294,7 +2440,16 @@ def index_single_blob_as_image(
             f"indexed {image_key} ::{rel_path} lines={c['text_lines']} "
             f"elf_sym={c['elf_sym']} elf_str={c['elf_str']}"
         )
-    return {"ok": True, "image_id": image_id, "path": image_key, **c}
+    result = {"ok": True, "image_id": image_id, "path": image_key, **c}
+    _mark_analysis_completed(
+        conn,
+        image_path=image_key,
+        sha256=sha,
+        size_bytes=size_b,
+        options_hash=options_hash,
+        metrics=result,
+    )
+    return result
 
 
 def build_index_for_extracted_tree(
@@ -2649,6 +2804,23 @@ def index_artifact(
             tree_dir = Path(sbom_dir) / "sources" / safe_sbom_name(image_key, suffix="")
             sbom_path = Path(sbom_dir) / safe_sbom_name(image_key)
             mount_sbom_path = Path(sbom_dir) / "mounted" / safe_sbom_name(image_key)
+            if result.get("skipped"):
+                cached_sbom = mount_sbom_path if mount_sbom_path.is_file() else sbom_path
+                if cached_sbom.is_file() and cached_sbom.stat().st_size > 0:
+                    if progress:
+                        progress(f"# syft SBOM skip cached {image_key}")
+                    result["sbom"] = {
+                        "ok": True,
+                        "cached": True,
+                        "path": str(cached_sbom),
+                        "grype_hint": f"grype sbom:{cached_sbom}",
+                    }
+                    if progress:
+                        progress(
+                            f"# artifact done kind={kind} path={logical_path} "
+                            f"elapsed={_format_duration(time.monotonic() - started)}"
+                        )
+                    return result
             mount_root = (
                 Path(sbom_mount_root)
                 if sbom_mount_root is not None
@@ -2729,6 +2901,16 @@ def index_artifact(
             except Exception as e:
                 sbom_result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
             result["sbom"] = sbom_result
+            if sbom_result.get("ok") and sbom_result.get("path"):
+                from corpus.vuln import append_sbom_catalog
+
+                append_sbom_catalog(
+                    Path(sbom_dir),
+                    image_key=image_key,
+                    sbom_path=Path(str(sbom_result["path"])),
+                    source_mode=str(sbom_result.get("source_mode") or ""),
+                    package_count=sbom_result.get("package_count"),
+                )
             if progress:
                 status = "ok" if sbom_result.get("ok") else f"failed: {sbom_result.get('error')}"
                 progress(f"# syft SBOM {image_key}: {status}")
@@ -2822,13 +3004,47 @@ def build_index_from_pkgstream(
     work_root = work_root.resolve()
     display_base = Path(display_base).resolve() if display_base is not None else _REPO_ROOT
     work_root.mkdir(parents=True, exist_ok=True)
+    ingest_key = pkgstream_ingest_key(pkgstream_path, collection_slug)
+    pkg_sha = file_sha256(pkgstream_path)
+    run_options_hash = _index_run_options_hash(
+        max_file_bytes=max_file_bytes,
+        skip_suffixes=skip_suffixes,
+        symtab=symtab,
+        string_sections=sections,
+        min_string_len=min_string_len,
+        max_strings_per_file=max_strings_per_file,
+        dwarf=dwarf,
+    )
 
     def log(msg: str) -> None:
         if progress:
             progress(msg)
 
+    completed_ingest = _completed_ingest_row(
+        conn,
+        ingest_key=ingest_key,
+        content_sha256=pkg_sha,
+        options_hash=run_options_hash,
+    )
+    if completed_ingest is not None:
+        metrics = json.loads(completed_ingest["metrics_json"] or "{}")
+        log(
+            f"# pkgstream ingest skip completed {_display_path(pkgstream_path, base=display_base)} "
+            f"artifacts={metrics.get('artifact_count')} skipped_squashfs={metrics.get('squashfs_skipped')}"
+        )
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "ingest_completed",
+            "pkgstream_path": _display_path(pkgstream_path, base=display_base),
+            "work_root": _display_path(work_root, base=display_base),
+            "collection_slug": collection_slug,
+            **metrics,
+        }
+
     parts: List[Dict[str, Any]] = []
     log(f"# pkgstream artifact ingest -> {work_root}")
+    squashfs_skipped = 0
     try:
         artifacts = iter_pkgstream_artifacts(pkgstream_path, collection=collection_slug)
         for artifact in artifacts:
@@ -2856,6 +3072,8 @@ def build_index_from_pkgstream(
             except Exception as e:
                 result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
                 log(f"# WARN artifact {artifact.source_key}: {result['error']}")
+            if isinstance(result, dict) and result.get("skipped") and str(artifact.kind) == "squashfs":
+                squashfs_skipped += 1
             parts.append(
                 {
                     "kind": artifact.kind,
@@ -2868,13 +3086,25 @@ def build_index_from_pkgstream(
     except Exception as e:
         return {"ok": False, "error": f"iter_pkgstream_artifacts: {e}", "parts": parts}
 
-    resolve_elf_library_edges(conn)
+    ingest_metrics = {
+        "artifact_count": len(parts),
+        "squashfs_skipped": squashfs_skipped,
+        "collection_slug": collection_slug,
+    }
+    _mark_ingest_completed(
+        conn,
+        ingest_key=ingest_key,
+        content_sha256=pkg_sha,
+        options_hash=run_options_hash,
+        metrics=ingest_metrics,
+    )
     return {
         "ok": True,
         "pkgstream_path": _display_path(pkgstream_path, base=display_base),
         "work_root": _display_path(work_root, base=display_base),
         "collection_slug": collection_slug,
         "parts": parts,
+        **ingest_metrics,
     }
 
 
@@ -2996,11 +3226,24 @@ def build_index_from_pkgstream_root(
         elapsed = time.monotonic() - root_started
         avg = elapsed / index
         eta = avg * (len(plan) - index)
+        skip_note = ""
+        if res.get("skipped"):
+            skip_note = " skipped=ingest"
         log(
-            f"# pkgstream root progress {index}/{len(plan)} ok={ok} failures={failures} "
+            f"# pkgstream root progress {index}/{len(plan)} ok={ok} failures={failures}{skip_note} "
             f"item_elapsed={_format_duration(time.monotonic() - item_started)} "
             f"elapsed={_format_duration(elapsed)} avg={_format_duration(avg)} eta={_format_duration(eta)}"
         )
+
+    log("# resolving ELF library edges for full corpus …")
+    resolve_elf_library_edges(conn)
+
+    summary = index_progress_summary(conn)
+    log(
+        f"# index resume summary images={summary.get('images')} "
+        f"analyses_completed={summary.get('analyses_completed')} "
+        f"pkgstreams_completed={summary.get('pkgstreams_completed')}"
+    )
 
     return {
         "ok": failures == 0,
@@ -3010,6 +3253,7 @@ def build_index_from_pkgstream_root(
         "pkgstream_count": len(plan),
         "failures": failures,
         "parts": results,
+        "summary": summary,
     }
 
 
