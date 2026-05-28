@@ -1,0 +1,3 @@
+455,456d454
+< #undef gets
+< _GL_WARN_ON_USE (gets, "gets is a security hole - use fgets instead");
