@@ -1,5 +1,6 @@
 """
-P2 spare gates for :func:`~opentl.open_tl.extract_virtual_disk_bytes_chain_aware`.
+P2 spare gates for :func:`~opentl.ntl_rw.extract_virt_byte_range_ntl_rw` /
+:func:`~opentl.open_tl.extract_virtual_disk_bytes_chain_aware`.
 
 Composes **reject-and-continue** behaviour (``ntl_find_phy`` / ``ntl_read_verify_phy_spare`` analogue):
 each chain candidate can be rejected so the next phys is tried. Full §7.1 kernel skip list is not

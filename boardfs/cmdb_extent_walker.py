@@ -5,8 +5,9 @@ This module **does not** implement Linux ``ext2_get_block``. It walks on-disk pa
 adjacency (lagged ``i_block[]``, in-band pointer-table pages, sparse indirect gaps) to
 reconstruct CMDB XML when inode metadata is stale relative to the physical extent.
 
-Use :func:`recover_cmdb_file_bytes` from ``paceflash cat --cmdb-recover``; default
-:func:`~boardfs.ext2_dissect._ext2_read_file_bytes` follows stock kernel semantics.
+Use :func:`recover_cmdb_file_bytes` from ``paceflash cat --cmdb-recover`` only for CMDB XML.
+Image carving on PACE opentla4 uses :func:`read_pace_inode_file_bytes` via
+:func:`~boardfs.ext2_dissect._ext2_read_file_bytes` with ``cmdb_recover=False``.
 
 Ghidra / empirical lag notes: ``reference/ghidra_ext2_pace_lag_investigation.md``.
 """
@@ -34,6 +35,7 @@ _PACE_CMDB_HEADER_SCAN_BACK = 128
 from boardfs.ext2_volume_io import Ext2VolumeAccess
 
 __all__ = [
+    "read_pace_inode_file_bytes",
     "recover_cmdb_file_bytes",
     "recover_cmdb_dir_data_block",
 ]
@@ -532,6 +534,70 @@ def recover_cmdb_near_inode_extent(
     return b""
 
 
+def read_pace_inode_file_bytes(
+    buf: bytes | bytearray,
+    sb_off: int,
+    i_block: bytes,
+    size: int,
+    *,
+    i_blocks: int = 0,
+    i_mode: int = 0,
+    access: Ext2VolumeAccess | None = None,
+) -> bytes:
+    """
+    Inode-faithful PACE regular-file read: map only ``i_size`` bytes via on-disk layout.
+
+    Uses :func:`_map_file_block_pace` with lag derived from the inode. Does **not** expand
+    spans for deleted CMDB extents, scan for XML footers, or substitute near-inode recovery.
+    Use :func:`recover_cmdb_file_bytes` only for CMDB XML recovery (``paceflash cat --cmdb-recover``).
+
+    Large install images (``uImage``, ``*.img``) on opentla4 use **slot 12 as singly-indirect**,
+    not a 13th direct block. For those inodes, delegate to stock ``ext2_get_block`` mapping
+    (12 direct + indirect @ 12) — see ``tools/ext2_block_anchor_debug.py`` / anchor JSON.
+    """
+    lb = _ext2_last_block(buf, sb_off)
+    blksz = _ext2_block_size(buf, sb_off)
+    if lb is None or lb <= 0 or blksz <= 0 or size <= 0:
+        return b""
+    ib = struct.unpack_from("<15I", i_block.ljust(60, b"\x00")[:60])
+    # Callers often omit ``i_mode`` (0); still use kernel indirect mapping for
+    # large install images (slot 12 = singly-indirect, not direct block 13).
+    is_regular = (i_mode & 0xF000) == 0x8000 or i_mode == 0
+    if is_regular and not _contiguous_direct13_inode(ib, last_block=lb):
+        from boardfs.ext2_dissect import _ext2_read_file_bytes_kernel_exact
+
+        return _ext2_read_file_bytes_kernel_exact(
+            buf, sb_off, i_block, size, access=access
+        )
+
+    pace_lag = _pace_inode_data_shift(
+        buf,
+        i_block,
+        last_block=lb,
+        blksz=blksz,
+        i_blocks=i_blocks,
+        i_mode=i_mode,
+        access=access,
+    )
+    nblocks = (size + blksz - 1) // blksz
+    parts = []
+    for idx in range(nblocks):
+        phys = _map_file_block_pace(
+            buf,
+            ib,
+            idx,
+            pace_lag=pace_lag,
+            last_block=lb,
+            blksz=blksz,
+            access=access,
+        )
+        if phys <= 0:
+            parts.append(b"\x00" * blksz)
+            continue
+        parts.append(_ext2_fs_block(buf, phys, access=access, blksz=blksz))
+    return b"".join(parts)[:size]
+
+
 def recover_cmdb_file_bytes(
     buf: bytes | bytearray,
     sb_off: int,
@@ -597,13 +663,15 @@ def recover_cmdb_file_bytes(
             continue
         parts.append(_ext2_fs_block(buf, phys, access=access, blksz=blksz))
     out = b"".join(parts)
-    if mapped_span > 0:
+    # ``_probe_mapped_span`` stops at ``max_fb`` (default 2048); do not cap binary
+    # payloads (e.g. ``/sys1/uImage``) when ``i_size`` requires more blocks.
+    if size > 0:
+        out = out[:size]
+    elif mapped_span > 0:
         out = out[: mapped_span * blksz]
     footer = out.find(_CMDB_XML_FOOTER)
     if footer >= 0:
         out = out[: footer + len(_CMDB_XML_FOOTER)]
-    elif size > 0:
-        out = out[:size]
     if not _cmdb_output_has_xml_header(out):
         near = recover_cmdb_near_inode_extent(
             buf,

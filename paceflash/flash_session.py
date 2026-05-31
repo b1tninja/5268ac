@@ -91,6 +91,7 @@ class Opentla4Ext2Volume:
     read_model: str
     slice_name: str
     access: Ext2VolumeAccess
+    ntl_assembly: dict | None = None
 
 
 @contextmanager
@@ -102,8 +103,16 @@ def open_opentla4_ext2(
     nand_translate: bool = True,
     nand_translate_mode: TranslateMode = "inline-2112",
     bbm_chain_aware: bool = False,
+    lazy_assembly: bool = True,
 ) -> Iterator[Opentla4Ext2Volume]:
-    """Assemble the TL slice and yield mountable ext2 bytes + superblock offset."""
+    """Assemble the TL slice and yield mountable ext2 bytes + superblock offset.
+
+    Default ``lazy_assembly=True`` bulk-assembles only the ext2 probe prefix (~512 KiB);
+    file blocks beyond that use per-block NTL replay (kernel ``__bread`` shape).
+    Set ``lazy_assembly=False`` or ``OPENTL_FULL_ASSEMBLY=1`` for full ~120 MiB materialization.
+    """
+    if os.environ.get("OPENTL_FULL_ASSEMBLY", "").strip() in ("1", "true", "yes"):
+        lazy_assembly = False
     with open_flash_registry(
         flash_path,
         cmdline,
@@ -112,7 +121,7 @@ def open_opentla4_ext2(
         bbm_chain_aware=bbm_chain_aware,
         tl_slice=slice_name,
     ) as reg:
-        vol = assemble_opentla4_volume(reg, slice_name=slice_name)
+        vol = assemble_opentla4_volume(reg, slice_name=slice_name, lazy_assembly=lazy_assembly)
         if not vol.slice_bytes:
             raise RuntimeError(vol.error or "no opentla4 slice bytes assembled")
         sb = vol.ext2_sb_offset
@@ -126,6 +135,7 @@ def open_opentla4_ext2(
             read_model=vol.read_model,
             slice_name=slice_name,
             access=_opentla4_volume_access(reg, vol, slice_name=slice_name, flat_oob=None),
+            ntl_assembly=vol.ntl_assembly,
         )
 
 

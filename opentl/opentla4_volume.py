@@ -20,6 +20,7 @@ from opentl.ext2_probe import (
 )
 
 OPENTLA4_SLICE_NAME = "opentla4"
+LAZY_ASSEMBLE_PROBE_BYTES = 512 * 1024
 ntl_result_to_jsonable = ntl_assembly_to_jsonable
 
 
@@ -62,6 +63,8 @@ def assemble_opentla4_ntl_bytes(
     flat_oob: bytes,
     tl_slice: TlSliceView,
     max_assemble_bytes: int | None = None,
+    collect_page_histogram: bool = False,
+    parallel_vblk_workers: int | None = None,
 ) -> AssembledNTLResult | None:
     if tl_slice.ptype != PTYPE_NTL_RW:
         return None
@@ -73,6 +76,8 @@ def assemble_opentla4_ntl_bytes(
         virt_byte_length=int(tl_slice.length_bytes),
         slice_name=tl_slice.name,
         max_assemble_bytes=max_assemble_bytes,
+        collect_page_histogram=collect_page_histogram,
+        parallel_vblk_workers=parallel_vblk_workers,
     )
 #endregion
 
@@ -138,6 +143,35 @@ def resolve_mountable_superblock(slice_bytes: bytes) -> int | None:
     return sb if ok else None
 
 
+def resolve_lazy_assemble_cap(
+    tl_slice: TlSliceView,
+    block_map: BlockMapBuild | None,
+    *,
+    probe_bytes: int = LAZY_ASSEMBLE_PROBE_BYTES,
+) -> int:
+    """Bytes to bulk-assemble up front; inode/file I/O beyond uses NTL per block."""
+    cap = int(probe_bytes)
+    if block_map is not None:
+        erase = int(block_map.geometry.erase_bytes)
+        if erase > 0:
+            cap = max(cap, erase * 2)
+    return min(int(tl_slice.length_bytes), cap)
+
+
+def _effective_max_assemble_bytes(
+    tl_slice: TlSliceView,
+    block_map: BlockMapBuild | None,
+    *,
+    max_assemble_bytes: int | None,
+    lazy_assembly: bool,
+) -> int | None:
+    if max_assemble_bytes is not None:
+        return max_assemble_bytes
+    if lazy_assembly:
+        return resolve_lazy_assemble_cap(tl_slice, block_map)
+    return None
+
+
 #region kernel_adjacent assemble_opentla4_volume
 def assemble_opentla4_volume(
     *,
@@ -149,11 +183,20 @@ def assemble_opentla4_volume(
     flat_oob: bytes | None,
     bbm_slice_bytes: bytes | None = None,
     max_assemble_bytes: int | None = None,
+    collect_page_histogram: bool = False,
+    parallel_vblk_workers: int | None = None,
+    lazy_assembly: bool = False,
 ) -> Opentla4VolumeResult:
     """Try NTL → linear ``tlpart`` → supplied BBM bytes; return mountable superblock when found."""
     out = Opentla4VolumeResult(slice_name=tl_slice.name, slice_bytes=b"")
     sb: int | None = None
     ntl_result: AssembledNTLResult | None = None
+    assemble_cap = _effective_max_assemble_bytes(
+        tl_slice,
+        block_map,
+        max_assemble_bytes=max_assemble_bytes,
+        lazy_assembly=lazy_assembly,
+    )
 
     if tl_slice.ptype == PTYPE_NTL_RW and session is not None and block_map is not None and flat_oob:
         ntl_result = assemble_opentla4_ntl_bytes(
@@ -161,12 +204,17 @@ def assemble_opentla4_volume(
             block_map=block_map,
             flat_oob=flat_oob,
             tl_slice=tl_slice,
-            max_assemble_bytes=max_assemble_bytes,
+            max_assemble_bytes=assemble_cap,
+            collect_page_histogram=collect_page_histogram,
+            parallel_vblk_workers=parallel_vblk_workers,
         )
         if ntl_result is not None:
             out.ntl_assembly = ntl_result_to_jsonable(ntl_result)
             out.slice_bytes = ntl_result.data
-            out.read_model = "ntl_rw_chain_replay"
+            if lazy_assembly and assemble_cap is not None and assemble_cap < int(tl_slice.length_bytes):
+                out.read_model = "ntl_rw_chain_replay_lazy"
+            else:
+                out.read_model = "ntl_rw_chain_replay"
             sb = resolve_mountable_superblock(ntl_result.data)
 
     if sb is None and tlpart_bytes is not None:
@@ -211,6 +259,7 @@ def assemble_opentla4_volume(
 
 
 __all__ = [
+    "LAZY_ASSEMBLE_PROBE_BYTES",
     "OPENTLA4_SLICE_NAME",
     "Opentla4VolumeResult",
     "TlSliceView",
@@ -220,6 +269,7 @@ __all__ = [
     "linear_opentla4_mtd_window",
     "ntl_result_to_jsonable",
     "resolve_flat_oob_from_session",
+    "resolve_lazy_assemble_cap",
     "resolve_mountable_superblock",
     "virt_opentla4_probe_bytes",
     "buffer_has_ext2_signature",

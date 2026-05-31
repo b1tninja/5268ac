@@ -15,6 +15,7 @@ from boardfs.ext2_dissect import (
     list_root_for_block_dev_with_meta,
     resolve_mountable_ext2_superblock_offset,
 )
+from boardfs.ext2_volume_io import Ext2VolumeAccess
 from boardfs.registry import FsRegistry
 from boardfs.tl_chain import (
     OPENTLA4_SLICE_NAME,
@@ -28,6 +29,7 @@ from boardfs.tl_chain import (
 
 from paceflash.ext2_file_extract import (
     DEFAULT_SQUASH_IMAGE_PATHS,
+    DEFAULT_UIMAGE_PATHS,
     ext2_file_sources_from_block_dev,
     probe_embedded_squash_images,
     try_dissect_ext2_file_root,
@@ -48,6 +50,7 @@ class Opentla4ExtractResult:
     warnings: list[str] = field(default_factory=list)
     read_model: str = "ext2_file_extract"
     ntl_assembly: dict[str, Any] | None = None
+    access: Ext2VolumeAccess | None = None
 
 
 def _volume_to_extract(vol: Opentla4VolumeResult) -> Opentla4ExtractResult:
@@ -69,10 +72,22 @@ def extract_opentla4_filesystem(
     *,
     slice_name: str = OPENTLA4_SLICE_NAME,
     paths: tuple[str, ...] = DEFAULT_SQUASH_IMAGE_PATHS,
+    uimage_paths: tuple[str, ...] = DEFAULT_UIMAGE_PATHS,
     probe_embedded_squash: bool = True,
+    collect_ntl_telemetry: bool = False,
+    lazy_assembly: bool = False,
 ) -> Opentla4ExtractResult:
-    """Mount ext2 on assembled slice bytes; extract known image paths."""
-    vol = assemble_opentla4_volume(reg, slice_name=slice_name)
+    """Mount ext2 on assembled slice bytes; extract known image paths.
+
+    Corpus indexing and bulk inventory passes ``lazy_assembly=False`` (full ~120 MiB
+    NTL materialization). Interactive ``paceflash cat`` uses lazy assembly by default.
+    """
+    vol = assemble_opentla4_volume(
+        reg,
+        slice_name=slice_name,
+        collect_page_histogram=collect_ntl_telemetry,
+        lazy_assembly=lazy_assembly,
+    )
     out = _volume_to_extract(vol)
     if out.error and not out.slice_bytes:
         return out
@@ -100,19 +115,26 @@ def extract_opentla4_filesystem(
     elif not out.error:
         out.error = "no ext2 container on opentla4 slice"
 
-    if sb is not None and probe_embedded_squash:
-        probe_rows = probe_embedded_squash_images(out.slice_bytes, paths, sb_off=sb)
-        out.embedded_squash_images = probe_rows
-        out.squash_file_probe = probe_rows
+    if sb is not None:
+        from paceflash.flash_session import _opentla4_volume_access
+
+        out.access = _opentla4_volume_access(reg, vol, slice_name=slice_name, sb_off=sb)
+        if probe_embedded_squash:
+            probe_rows = probe_embedded_squash_images(out.slice_bytes, paths, sb_off=sb)
+            out.embedded_squash_images = probe_rows
+            out.squash_file_probe = probe_rows
         try:
-            sources, _, sb2 = ext2_file_sources_from_block_dev(dev, paths)
+            all_paths = tuple(dict.fromkeys((*paths, *uimage_paths)))
+            sources, _, sb2 = ext2_file_sources_from_block_dev(
+                dev, all_paths, access=out.access
+            )
             if sb2 is not None:
                 out.ext2_sb_offset = sb2
             for label, body in sources:
                 path = label.split(":", 1)[-1] if ":" in label else label
                 out.extracted_files[path] = body
         except Exception as e:
-            out.warnings.append(f"embedded squash extract failed: {type(e).__name__}: {e}")
+            out.warnings.append(f"embedded ext2 file extract failed: {type(e).__name__}: {e}")
 
     return out
 

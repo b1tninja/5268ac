@@ -313,6 +313,8 @@ class FsRegistry:
         self._tl_mtd_skip = 0
         self._tl_enum_error = None
         self._tl_virt_slice_cache.clear()
+        if hasattr(self, "_opentla4_volume_cache"):
+            self._opentla4_volume_cache.clear()
 
     def clear_virt_slice_cache(self) -> None:
         """Drop cached TL slice payloads (virtual BBM assemblies); TL disklabel enum cache unaffected."""

@@ -84,6 +84,7 @@ from opentl.ntl_rw import (
     AssembledNTLResult,
     assemble_ntl_rw_slice,
     build_chain_head_cache,
+    extract_virt_byte_range_ntl_rw,
     ntl_assembly_to_jsonable,
 )
 from opentl.nand_translate import TranslateMode, nand_translate_to_bytes
@@ -144,6 +145,7 @@ __all__ = [
     "layout_within_tl_erase_unit",
     "opentla4_ext2_magic_le",
     "assemble_ntl_rw_slice",
+    "extract_virt_byte_range_ntl_rw",
     "build_chain_head_cache",
     "ntl_assembly_to_jsonable",
     "parse_block_map_dict",

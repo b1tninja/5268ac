@@ -57,6 +57,8 @@ def assemble_opentla4_ntl_for_registry(
     slice_name: str = o4.OPENTLA4_SLICE_NAME,
     flat_oob: bytes | None = None,
     max_assemble_bytes: int | None = None,
+    collect_page_histogram: bool = False,
+    parallel_vblk_workers: int | None = None,
 ) -> AssembledNTLResult | None:
     m = getattr(reg, "attached_block_map", None)
     session = getattr(reg, "attached_logical_opentl_session", None)
@@ -76,6 +78,8 @@ def assemble_opentla4_ntl_for_registry(
         flat_oob=flat_oob,
         tl_slice=tl_slice,
         max_assemble_bytes=max_assemble_bytes,
+        collect_page_histogram=collect_page_histogram,
+        parallel_vblk_workers=parallel_vblk_workers,
     )
 
 
@@ -167,8 +171,26 @@ def assemble_opentla4_volume_for_registry(
     *,
     slice_name: str = o4.OPENTLA4_SLICE_NAME,
     max_assemble_bytes: int | None = None,
+    collect_page_histogram: bool = False,
+    parallel_vblk_workers: int | None = None,
+    lazy_assembly: bool = False,
 ) -> o4.Opentla4VolumeResult:
     tl_slice = _tl_slice_view(reg, slice_name)
+    block_map = getattr(reg, "attached_block_map", None)
+    assemble_cap = o4._effective_max_assemble_bytes(
+        tl_slice,
+        block_map,
+        max_assemble_bytes=max_assemble_bytes,
+        lazy_assembly=lazy_assembly,
+    )
+    cache: dict[tuple[str, int | None, bool, bool], o4.Opentla4VolumeResult] = getattr(
+        reg, "_opentla4_volume_cache", None
+    ) or {}
+    key = (slice_name, assemble_cap, collect_page_histogram, lazy_assembly)
+    hit = cache.get(key)
+    if hit is not None:
+        return hit
+
     tlpart: bytes | None = None
     try:
         tlpart = reg.flash.read_partition("tlpart")
@@ -180,7 +202,7 @@ def assemble_opentla4_volume_for_registry(
         bbm_bytes = reg.block_dev_for_tl_slice(slice_name).read_slice()
     except Exception:
         pass
-    return o4.assemble_opentla4_volume(
+    result = o4.assemble_opentla4_volume(
         tl_slice=tl_slice,
         tlpart_bytes=tlpart,
         mtd_skip=skip,
@@ -188,8 +210,14 @@ def assemble_opentla4_volume_for_registry(
         block_map=getattr(reg, "attached_block_map", None),
         flat_oob=resolve_flat_oob(reg),
         bbm_slice_bytes=bbm_bytes,
-        max_assemble_bytes=max_assemble_bytes,
+        max_assemble_bytes=assemble_cap,
+        collect_page_histogram=collect_page_histogram,
+        parallel_vblk_workers=parallel_vblk_workers,
+        lazy_assembly=lazy_assembly,
     )
+    cache[key] = result
+    reg._opentla4_volume_cache = cache  # type: ignore[attr-defined]
+    return result
 #endregion
 
 

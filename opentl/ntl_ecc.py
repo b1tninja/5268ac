@@ -324,8 +324,8 @@ def verify_read_phy_page_bounce(
 
     ``bounce`` layout: ``[0:page_size]`` data, ``[page_size:page_size+64]`` spare.
 
-    Returns ``(page_bytes, corrected, ecc_hard_fail)``. Page bytes are still returned when
-    ``ecc_hard_fail`` (kernel ``ntl_verify_read_phy_page`` returns success after ECC printk).
+    Returns ``(page_bytes, corrected, ecc_hard_fail)``. On hard fail, returns **pre-ECC**
+    page bytes (``ntl_ecc_read`` may have applied a wrong single-byte fix before failing).
     """
     from opentl.spare_layout import map_page_state, spare_read_verify_ok, xsum_matches
 
@@ -336,6 +336,7 @@ def verify_read_phy_page_bounce(
     trailer = pages_per_erase - 1 if trailer_spare_index is None else trailer_spare_index
     corrected = False
     ecc_hard_fail = False
+    pristine = bytes(bounce[:page_size])
     if bounce[page_size + trailer] == 0xFF and spare_read_verify_ok(
         spare, large_page=True, pages_per_erase=pages_per_erase
     ):
@@ -345,6 +346,7 @@ def verify_read_phy_page_bounce(
             if st != 0:
                 corrected = False
                 ecc_hard_fail = True
+                return pristine, False, True
     elif state in (0, 0x24):
         bounce[page_size + 4] = state & 0xFF
     return bytes(bounce[:page_size]), corrected, ecc_hard_fail

@@ -22,12 +22,15 @@ from boardfs.ext2_path import (
 
 from paceflash.board_info import dump_board_info
 from paceflash.board_param import dump_paramtool
+from paceflash.cmdb_fw import dump_cmdb_fw
+from paceflash.cmdb_parse import list_table_names, read_cmdb_text
+from paceflash.flash_session import open_opentla4_ext2
 from paceflash.flash_patch import patch_trust_engcert_flash
 from paceflash.eapol_cert import dump_eapol_cert
 from paceflash.network_config import gen_network_config
 from paceflash.factory_params import dump_factory_params
 from paceflash.http_auth import dump_http_auth
-from paceflash.flash_session import open_opentla4_ext2
+from paceflash.uimage_oracle import resolve_uimage_oracle
 from paceflash.inventory import build_inventory
 from paceflash.shell import Ext2ShellSession, ShellConfig, run_interactive, run_script
 from paceflash.upgrade_correlation import build_carrier_index
@@ -319,12 +322,18 @@ def _run_cat(args: argparse.Namespace, flash_path: Path) -> int:
             nand_translate_mode=args.nand_mode,
             bbm_chain_aware=getattr(args, "bbm_chain_aware", False),
         ) as vol:
+            use_merge = False if getattr(args, "no_extent_merge", False) else None
+            oracle = None
+            if use_merge is not False and rel.rsplit("/", 1)[-1] == "uImage":
+                oracle = resolve_uimage_oracle(getattr(args, "pkgstream_oracle", None))
             data = read_ext2_regular_file(
                 vol.slice_bytes,
                 rel,
                 sb_off=vol.sb_off,
                 access=vol.access,
                 cmdb_recover=getattr(args, "cmdb_recover", False),
+                extent_merge=use_merge,
+                oracle_body=oracle,
             )
     except IsADirectoryError as e:
         print(f"paceflash: is a directory: {e}", file=sys.stderr)
@@ -415,6 +424,133 @@ def _print_dump_http_auth_human(doc: dict[str, Any]) -> None:
             print(f"  user={u.get('user')!r} password={u.get('password')!r}")
     for w in doc.get("warnings") or []:
         print(f"paceflash: warning: {w}", file=sys.stderr)
+
+
+def _print_dump_cmdb_fw_human(doc: dict[str, Any], *, pinholes_only: bool = False) -> None:
+    if doc.get("flash"):
+        print(f"Flash: {doc.get('flash')}")
+    if doc.get("cmdb_path"):
+        print(f"CMDB: {doc.get('cmdb_path')}")
+    sources = doc.get("sources") or []
+    if not sources:
+        print("No CMDB sources read.")
+    for src in sources:
+        label = src.get("path") or src.get("source") or "?"
+        if not src.get("ok"):
+            print(f"\n== {label} ==\n  error: {src.get('error')}")
+            continue
+        print(f"\n== {label} ({src.get('encoding')}, {src.get('bytes')} bytes) ==")
+        if src.get("firmware_version"):
+            print(f"Firmware: {src.get('firmware_version')}")
+        pinholes = src.get("pinholes") or []
+        print(f"\nPinholes (hostapps): {len(pinholes)}")
+        if pinholes:
+            for p in pinholes:
+                ports = p.get("ports") or []
+                port_txt = ", ".join(
+                    f"{pr.get('proto')} {pr.get('start_port')}-{pr.get('end_port')}"
+                    for pr in ports[:4]
+                )
+                print(
+                    f"  mapid={p.get('mapid')!r} node={p.get('node_name')!r} "
+                    f"({p.get('node_ip')}) app={p.get('app_name')!r} id={p.get('app_id')} "
+                    f"ports=[{port_txt}]"
+                )
+                extra = {
+                    k: v
+                    for k, v in (p.get("hostapps") or {}).items()
+                    if k not in {"mapid", "MAPID", "nodeid", "app_id", "appid"}
+                }
+                if extra:
+                    print(f"    hostapps: {extra}")
+        else:
+            print("  (none — empty hostapps table)")
+        if pinholes_only:
+            continue
+        fw = src.get("fw") or {}
+        if fw:
+            print("\nFirewall (fw):")
+            if fw.get("inbound"):
+                print(f"  inbound: {fw.get('inbound')}")
+            if fw.get("outbound"):
+                print(f"  outbound: {fw.get('outbound')}")
+            params = fw.get("params") or {}
+            for key in sorted(params):
+                print(f"  {key}: {params[key]}")
+        rules = src.get("rules") or {}
+        for rname in ("fwrules", "firewall_rule", "bind", "fw6_rule"):
+            rows = rules.get(rname) or []
+            if not rows:
+                continue
+            print(f"\n{rname}: {len(rows)} row(s)")
+            for row in rows[:20]:
+                if rname == "fwrules":
+                    rule = str(row.get("rule") or "").replace("&gt;", ">").replace("&lt;", "<")
+                    print(f"  order {row.get('order')}: {rule}")
+                elif rname == "bind":
+                    print(
+                        f"  {row.get('bindid')}: {row.get('state')} "
+                        f"{row.get('proto')} {row.get('portstatic')} app={row.get('appid')}"
+                    )
+                elif rname == "fw6_rule":
+                    print(
+                        f"  {row.get('alias')}: {row.get('chain')} -> "
+                        f"{row.get('target_chain')} ({row.get('description')})"
+                    )
+                else:
+                    print(f"  row {row.get('row')}: {row}")
+            if len(rows) > 20:
+                print(f"  ... {len(rows) - 20} more")
+    tlpart = doc.get("tlpart_cmdb") or []
+    if tlpart and not pinholes_only:
+        print(f"\nEmbedded tlpart CMDB chunks with firewall tables: {len(tlpart)}")
+        for block in tlpart[:3]:
+            print(
+                f"  offset=0x{block.get('offset', 0):x} "
+                f"pinholes={len(block.get('pinholes') or [])} "
+                f"fw={'yes' if block.get('fw') else 'no'}"
+            )
+    for w in doc.get("warnings") or []:
+        print(f"paceflash: warning: {w}", file=sys.stderr)
+
+
+def _run_dump_cmdb_fw(args: argparse.Namespace, flash_path: Path | None) -> int:
+    tables = None
+    if getattr(args, "tables", None):
+        tables = tuple(t.strip() for t in args.tables.split(",") if t.strip())
+    doc = dump_cmdb_fw(
+        flash_path=flash_path,
+        cmdb_path=getattr(args, "cmdb", None),
+        cmdline=_cmdline_from_args(args),
+        nand_translate=not getattr(args, "no_nand_translate", False),
+        nand_translate_mode=getattr(args, "nand_mode", "inline-2112"),
+        bbm_chain_aware=getattr(args, "bbm_chain_aware", False),
+        include_tlpart_scan=not getattr(args, "no_tlpart_scan", False),
+        tables=tables,
+        include_catalog=getattr(args, "catalog", False),
+    )
+    if args.json:
+        print(json.dumps(doc, indent=2))
+    else:
+        _print_dump_cmdb_fw_human(doc, pinholes_only=getattr(args, "pinholes_only", False))
+    return 0 if doc.get("ok") else 1
+
+
+def _run_cmdb_list_tables(args: argparse.Namespace) -> int:
+    cmdb = getattr(args, "cmdb", None)
+    if cmdb is None:
+        print("paceflash: cmdb-list-tables requires --cmdb PATH", file=sys.stderr)
+        return 2
+    text, enc = read_cmdb_text(Path(cmdb).read_bytes())
+    names = list_table_names(text)
+    if args.json:
+        print(json.dumps({"cmdb": str(cmdb), "encoding": enc, "tables": names}, indent=2))
+    else:
+        print(f"CMDB: {cmdb} ({enc})")
+        print(f"Tables: {len(names)}")
+        for n in names:
+            print(f"  {n}")
+    return 0
 
 
 def _run_dump_http_auth(args: argparse.Namespace, flash_path: Path) -> int:
@@ -682,6 +818,19 @@ def _print_board_info_human(doc: dict[str, Any]) -> None:
         mu = block.get("mgmt_upgstate") or {}
         print(f"\ntlpart mgmt_upgstate @{block.get('offset', 0):#x}:")
         print(f"  part1.Name={mu.get('part1_name')!r}")
+    cell = doc.get("cellular") or {}
+    if cell.get("imei") or cell.get("error"):
+        print("\nLTE / QxDM (CMDB usim — not factory block):")
+        if cell.get("imei"):
+            print(f"  IMEI={cell.get('imei')}  source={cell.get('source')}")
+            if doc.get("qxdm_passcode"):
+                print(f"  QxDM passcode (last 6): {doc.get('qxdm_passcode')}")
+        else:
+            print(f"  IMEI: not found ({cell.get('error', 'unknown')})")
+            print(
+                "  hint: modem may be unpopulated or never synced USIM to CMDB "
+                "(SIM not required for IMEI read, but module must register)"
+            )
     print("\nlibboard RE (version file API):")
     bb = (doc.get("libboard_re") or {}).get("board_build_version") or {}
     for line in bb.get("offline_ext2_equivalents") or []:
@@ -1139,6 +1288,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Physical CMDB extent recovery (not kernel ext2); default is kernel-faithful read",
     )
+    cat.add_argument(
+        "--no-extent-merge",
+        action="store_true",
+        help="Disable stale-inode uImage repair (default: repair enabled for sys1/uImage)",
+    )
+    cat.add_argument(
+        "--pkgstream-oracle",
+        type=Path,
+        metavar="PKGSTREAM",
+        help="Carrier pkgstream for per-block uImage chunk-oracle repair (default: 533857 install)",
+    )
     _add_global_flash_options(cat, suppress_if_unset=True)
     _add_subcommand_common_args(cat)
     _add_operands_arg(
@@ -1176,6 +1336,54 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip scanning assembled tlpart for embedded CM user tables",
     )
     ha.add_argument("--json", action="store_true")
+
+    cf = sub.add_parser(
+        "dump-cmdb-fw",
+        help="Dump CMDB firewall state: pinholes (hostapps), fw params, and rule tables",
+    )
+    _add_global_flash_options(cf, suppress_if_unset=True)
+    _add_nand_args(cf)
+    _add_operands_arg(
+        cf,
+        metavar="[FLASH]",
+        help_text="Flash dump (optional when using --flash PATH or --cmdb PATH)",
+    )
+    cf.add_argument(
+        "--cmdb",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Read CMDB XML from a local cmlegacy.* file instead of flash ext2",
+    )
+    cf.add_argument(
+        "--tables",
+        type=str,
+        default=None,
+        help="Comma-separated CM table names to parse (default: firewall/pinhole set)",
+    )
+    cf.add_argument(
+        "--catalog",
+        action="store_true",
+        help="Include full apps/ports catalog in JSON output",
+    )
+    cf.add_argument(
+        "--pinholes-only",
+        action="store_true",
+        help="Human output: pinholes section only",
+    )
+    cf.add_argument(
+        "--no-tlpart-scan",
+        action="store_true",
+        help="Skip scanning assembled tlpart for embedded CMDB firewall chunks",
+    )
+    cf.add_argument("--json", action="store_true")
+
+    lt = sub.add_parser(
+        "cmdb-list-tables",
+        help="List CMDB table names in a local cmlegacy.* XML file",
+    )
+    lt.add_argument("--cmdb", type=Path, required=True, metavar="PATH")
+    lt.add_argument("--json", action="store_true")
 
     eap = sub.add_parser(
         "dump-eapol-cert",
@@ -1537,6 +1745,15 @@ See reference/linux_8021x_lightspeed.md.
     if args.command == "dump-http-auth":
         flash_path = _resolve_flash_path(args)
         return _run_dump_http_auth(args, flash_path)
+
+    if args.command == "dump-cmdb-fw":
+        flash_path = None
+        if getattr(args, "cmdb", None) is None:
+            flash_path = _resolve_flash_path(args)
+        return _run_dump_cmdb_fw(args, flash_path)
+
+    if args.command == "cmdb-list-tables":
+        return _run_cmdb_list_tables(args)
 
     if args.command == "dump-eapol-cert":
         flash_path = _resolve_flash_path(args)

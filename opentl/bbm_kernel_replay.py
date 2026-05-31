@@ -19,7 +19,12 @@ import hashlib
 from collections import defaultdict
 from pathlib import Path
 
-from opentl.spare_chain_replay import oob_page_spare, spare_blob_matches_geo, tl_geometry_from_flat_spare
+from opentl.spare_chain_replay import (
+    iter_mode2_phys_chain_from_oob,
+    oob_page_spare,
+    spare_blob_matches_geo,
+    tl_geometry_from_flat_spare,
+)
 from opentl.spare_layout import parse_spare, xsum_matches
 from opentl.tl_bbm import (
     TL_PHYS_BLOCK_HOLE,
@@ -61,7 +66,74 @@ def _pick_phys_for_virt(rows: list[tuple[int, int, bool]]) -> tuple[int, bool]:
     return rows_sorted[0][0], collision
 
 
-def _virt_table_from_flat_spare(blob: bytes, geo: TLGeometry) -> tuple[list[int], list[str], list[str]]:
+def _pick_phys_for_virt_chain_tail(
+    blob: bytes,
+    geo: TLGeometry,
+    rows: list[tuple[int, int, bool]],
+) -> tuple[int, bool, bool, list[str]]:
+    """
+    Kernel-adjacent collision resolver: prefer a phys erase block that is a **chain tail**
+    (page-0 spare next == terminator) per mode-2 chain replay.
+
+    This is closer to the kernel contract that ``*(remap+8)[vblk]`` points at the
+    current/tail physical erase block (post-GC), not an arbitrary member of the chain.
+    """
+    notes: list[str] = []
+    uniq_pb = sorted({pb for pb, _pg, _mir in rows})
+    collision = len(uniq_pb) > 1
+    if not uniq_pb:
+        return TL_PHYS_BLOCK_HOLE, collision, False, notes
+
+    # count tagged observations per phys erase block (proxy for "payload block" vs stray tags)
+    by_pb_count: dict[int, int] = {}
+    by_pb_minpg: dict[int, int] = {}
+    by_pb_mirror: dict[int, int] = {}
+    for pb, pg, mir in rows:
+        by_pb_count[pb] = int(by_pb_count.get(pb, 0)) + 1
+        by_pb_minpg[pb] = min(int(by_pb_minpg.get(pb, pg)), int(pg)) if pb in by_pb_minpg else int(pg)
+        by_pb_mirror[pb] = int(by_pb_mirror.get(pb, 0)) + (1 if mir else 0)
+
+    scored: list[tuple[tuple[int, int, int, int, int], int]] = []
+    is_tail_by_pb: dict[int, bool] = {}
+    for pb in uniq_pb:
+        chain = iter_mode2_phys_chain_from_oob(
+            blob,
+            geo,
+            start_phys=int(pb),
+            page_size_is_0x200=False,
+            spare_page=0,
+            max_hops=0x46,
+        )
+        # tail is last hop if a chain exists; if no chain, treat pb as tail candidate.
+        tail = chain[-1] if chain else int(pb)
+        is_tail = 1 if tail == int(pb) else 0
+        is_tail_by_pb[int(pb)] = bool(is_tail)
+        chain_len = len(chain)
+        obs = int(by_pb_count.get(pb, 0))
+        mirror_pen = int(by_pb_mirror.get(pb, 0))
+        minpg = int(by_pb_minpg.get(pb, 0))
+        # prefer: tail, longer chain (more evidence), more observations, fewer mirror flags, lower page, lower pb
+        score = (is_tail, chain_len, obs, -mirror_pen, -minpg)
+        scored.append((score, int(pb)))
+
+    scored.sort(reverse=True)
+    chosen = scored[0][1]
+    if collision and chosen not in uniq_pb:
+        notes.append("chain_tail chooser produced unexpected pb")
+    if collision:
+        notes.append(
+            "collision resolved by chain-tail scoring: "
+            + ", ".join(f"pb{pb}:{score}" for score, pb in scored[:4])
+        )
+    return chosen, collision, bool(is_tail_by_pb.get(chosen, False)), notes
+
+
+def _virt_table_from_flat_spare(
+    blob: bytes,
+    geo: TLGeometry,
+    *,
+    collision_strategy: str = "v1",
+) -> tuple[list[int], list[str], list[str]]:
     """
     Build ``virt_to_phys_block`` (length ``geo.virt_blocks``) from full-chip flat spare.
 
@@ -88,12 +160,25 @@ def _virt_table_from_flat_spare(blob: bytes, geo: TLGeometry) -> tuple[list[int]
 
     table = [TL_PHYS_BLOCK_HOLE] * geo.virt_blocks
     collisions = 0
+    collision_notes = 0
+    chosen_tail = 0
+    chosen_non_hole = 0
     for v in range(geo.virt_blocks):
         rows = cand.get(v)
         if not rows:
             continue
-        pb, coll = _pick_phys_for_virt(rows)
+        if collision_strategy == "v2_chain_tail":
+            pb, coll, is_tail, n = _pick_phys_for_virt_chain_tail(blob, geo, rows)
+            if n:
+                collision_notes += 1
+                notes.extend(n[:2])
+        else:
+            pb, coll = _pick_phys_for_virt(rows)
         table[v] = pb
+        if pb != TL_PHYS_BLOCK_HOLE:
+            chosen_non_hole += 1
+            if collision_strategy == "v2_chain_tail" and is_tail:
+                chosen_tail += 1
         if coll:
             collisions += 1
 
@@ -106,9 +191,13 @@ def _virt_table_from_flat_spare(blob: bytes, geo: TLGeometry) -> tuple[list[int]
     n_mapped = sum(1 for x in table if x != TL_PHYS_BLOCK_HOLE)
     n_holes = geo.virt_blocks - n_mapped
     notes.append(
-        f"kernel_replay_v1: mapped {n_mapped} / {geo.virt_blocks} virt slots from spare "
+        f"kernel_replay_{collision_strategy}: mapped {n_mapped} / {geo.virt_blocks} virt slots from spare "
         f"({n_holes} holes); scan raw_blocks={geo.raw_blocks} pages_per_erase={_PAGES_PER_ERASE}"
     )
+    if collision_strategy == "v2_chain_tail" and collision_notes:
+        notes.append(f"collision_notes_emitted={collision_notes}")
+    if collision_strategy == "v2_chain_tail" and chosen_non_hole:
+        notes.append(f"chosen_tail_phys={chosen_tail} / {chosen_non_hole}")
 
     if n_mapped == 0:
         raise ValueError(
@@ -130,6 +219,7 @@ def build_block_map_from_kernel_mount_replay(
     spare_bytes: bytes | None = None,
     nand_logical_offset: int = 0,
     geometry: TLGeometry | None = None,
+    collision_strategy: str = "v1",
 ) -> BlockMapBuild:
     """
     Build a :class:`~opentl.tl_bbm.BlockMapBuild` by offline replay of the virt table at
@@ -159,13 +249,13 @@ def build_block_map_from_kernel_mount_replay(
             f"(raw_blocks={geo.raw_blocks} × {_PAGES_PER_ERASE} × 64)"
         )
 
-    table, notes, warnings = _virt_table_from_flat_spare(blob, geo)
+    table, notes, warnings = _virt_table_from_flat_spare(blob, geo, collision_strategy=collision_strategy)
     prefix_len = int(logical_prefix_bytes or 0)
     sha_pre = _input_sha256_prefix(img) if img.is_file() else ""
 
     return BlockMapBuild(
         geometry=geo,
-        mode="kernel_replay_v1",
+        mode=f"kernel_replay_{collision_strategy}",
         logical_prefix_bytes=prefix_len,
         virt_to_phys_block=table,
         stats_physical_block_index=None,

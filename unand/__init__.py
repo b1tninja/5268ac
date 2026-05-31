@@ -57,11 +57,18 @@ from .vplane import VirtualPlane
 
 # --- S34ML chip family ---
 from .s34ml import (
+    FACTORY_BBI_MARKER_PAGES,
     S34ML,
     S34ML01G1,
     S34ML02G1,
     S34ML04G1,
     S34MLFamily,
+    factory_bbi_bad_from_spare,
+    factory_bbi_marker_page,
+    edc_unit_spare_offset,
+    EDC_UNIT_DATA_BYTES,
+    EDC_UNIT_SPARE_BYTES,
+    EDC_UNITS_PER_PAGE,
     SR1_ECC_UNCOR,
     SR1_ERASE_FAIL,
     SR1_PROGRAM_FAIL,
@@ -110,6 +117,13 @@ __all__ = [
     "S34ML01G1",
     "S34ML02G1",
     "S34ML04G1",
+    "FACTORY_BBI_MARKER_PAGES",
+    "factory_bbi_bad_from_spare",
+    "factory_bbi_marker_page",
+    "edc_unit_spare_offset",
+    "EDC_UNIT_DATA_BYTES",
+    "EDC_UNIT_SPARE_BYTES",
+    "EDC_UNITS_PER_PAGE",
     # EDC / Status Register bitmasks
     "SR1_ECC_UNCOR",
     "SR1_ERASE_FAIL",

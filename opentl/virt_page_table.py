@@ -141,10 +141,19 @@ def _phys_page_base_chain_aware_at_virt_page_start(
     page_size_is_0x200: bool,
     verify_page: Callable[[int, int, bytes, bytes], bool] | None,
 ) -> int:
-    """First accepted spare-chain candidate for the 2048 B NAND page at ``gvirt_page_start``."""
+    """Phys linear prefix base for the 2048 B NAND page at ``gvirt_page_start`` (``ntl_rw`` path)."""
+    _ = page_size_is_0x200
+    from opentl.ntl_rw import (
+        PageMapCache,
+        _HOLE_PAGE,
+        _page_phys_base,
+        _pages_per_erase,
+        _read_virt_page_cached,
+        build_chain_head_cache,
+    )
+
     geo = m.geometry
     erase = int(geo.erase_bytes)
-    lim = len(logical_prefix)
     vb = gvirt_page_start // erase
     vo = gvirt_page_start % erase
     page_in_block = vo // KERNEL_NAND_PAGE_BYTES
@@ -154,27 +163,25 @@ def _phys_page_base_chain_aware_at_virt_page_start(
     if is_hole_phys_block(pb):
         return PHYS_PAGE_BASE_HOLE
 
-    def default_verify(phys: int, pg_in_blk: int, page_data: bytes, spare64: bytes) -> bool:
-        _ = phys, pg_in_blk, spare64
-        return len(page_data) == KERNEL_NAND_PAGE_BYTES
-
-    accept = verify_page if verify_page is not None else default_verify
-
-    for phys in iter_mode2_phys_chain_from_oob(
+    stats: dict = {"_chain_head": build_chain_head_cache(flat_oob, m), "_chain_len": {}}
+    page = _read_virt_page_cached(
+        logical_prefix,
         flat_oob,
-        geo,
-        start_phys=int(pb),
-        page_size_is_0x200=page_size_is_0x200,
-    ):
-        base = phys * erase + page_in_block * KERNEL_NAND_PAGE_BYTES
-        end = base + KERNEL_NAND_PAGE_BYTES
-        if base < 0 or end > lim:
-            continue
-        page_data = logical_prefix[base:end]
-        spare64 = oob_page_spare(flat_oob, geo, phys, page_in_block)
-        if accept(phys, page_in_block, page_data, spare64):
-            return base
-    return PHYS_PAGE_BASE_HOLE
+        m,
+        vblk=vb,
+        ppage=page_in_block,
+        needed={vb: {page_in_block}},
+        stats=stats,
+        pages_per_erase=_pages_per_erase(m),
+        page_map_cache=PageMapCache(),
+        accept_page=verify_page,
+    )
+    if page is None or page is _HOLE_PAGE:
+        return PHYS_PAGE_BASE_HOLE
+    base = _page_phys_base(stats, vb, page_in_block)
+    if base is None or base < 0 or base + KERNEL_NAND_PAGE_BYTES > len(logical_prefix):
+        return PHYS_PAGE_BASE_HOLE
+    return int(base)
 
 
 def build_virt_nand_page_table_chain_aware(

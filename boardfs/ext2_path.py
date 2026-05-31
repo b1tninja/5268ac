@@ -23,6 +23,7 @@ from boardfs.ext2_dissect import (
     _ext2_inode_byte_offset,
     _ext2_read_file_bytes,
     _ext2_read_inode_fields,
+    _ext2_read_inode_i_blocks,
     _ext2_volume_uses_pace_inode_layout,
     resolve_mountable_ext2_superblock_offset,
 )
@@ -64,12 +65,14 @@ def _ext2_dir_entries_from_inode(
     i_blocks = 0
     i_mode = 0
     if dir_inum > 0:
-        fields = _ext2_read_inode_fields(work, sb_off, dir_inum)
+        fields = _ext2_read_inode_fields(work, sb_off, dir_inum, access=access)
         if fields is not None:
             i_mode, _, _ = fields
             ino_off = _ext2_inode_byte_offset(work, sb_off, dir_inum)
             if ino_off is not None:
                 i_blocks = struct.unpack_from("<I", work, ino_off + 28)[0]
+            else:
+                i_blocks = _ext2_read_inode_i_blocks(work, sb_off, dir_inum, access=access)
     data = _ext2_dir_blocks_bytes(
         work,
         i_block,
@@ -126,7 +129,7 @@ def _ext2_resolve_path_inum(
         if match is None:
             raise FileNotFoundError(rel)
         inum, _, _ft = match
-        fields = _ext2_read_inode_fields(work, sb_off, inum)
+        fields = _ext2_read_inode_fields(work, sb_off, inum, access=access)
         if fields is None:
             raise FileNotFoundError(f"{rel} (inode {inum})")
         mode, size, i_block = fields
@@ -250,6 +253,17 @@ def list_ext2_directory(
     return rows
 
 
+def default_extent_merge_for_path(path: str) -> bool:
+    """Opt-in pkgstream/gzip repair for install images (forensic / explicit oracle)."""
+    return False
+
+
+def default_shadow_promote_for_path(path: str) -> bool:
+    """Promote deleted-orphan shadow inode blocks for opentla4 install images."""
+    base = normalize_ext2_path(path).rsplit("/", 1)[-1]
+    return base == "uImage"
+
+
 def read_ext2_regular_file(
     slice_data: bytes,
     path: str,
@@ -257,6 +271,9 @@ def read_ext2_regular_file(
     sb_off: int | None = None,
     access: Ext2VolumeAccess | None = None,
     cmdb_recover: bool = False,
+    extent_merge: bool | None = None,
+    shadow_promote: bool | None = None,
+    oracle_body: bytes | None = None,
 ) -> bytes:
     """Read a regular file from the ext2 volume; raises if missing or not a file."""
     rel = normalize_ext2_path(path)
@@ -288,10 +305,11 @@ def read_ext2_regular_file(
         raise IsADirectoryError(rel)
     if not stat.S_ISREG(mode):
         raise OSError(f"not a regular file: {rel!r}")
-    i_blocks = 0
-    ino_off = _ext2_inode_byte_offset(work_view, sb, _inum)
-    if ino_off is not None:
-        i_blocks = struct.unpack_from("<I", work_view, ino_off + 28)[0]
+    i_blocks = _ext2_read_inode_i_blocks(work_view, sb, _inum, access=access)
+    if extent_merge is None:
+        extent_merge = default_extent_merge_for_path(rel)
+    if shadow_promote is None:
+        shadow_promote = default_shadow_promote_for_path(rel)
     data = _ext2_read_file_bytes(
         work_view,
         sb,
@@ -301,6 +319,11 @@ def read_ext2_regular_file(
         i_mode=mode,
         access=access,
         cmdb_recover=cmdb_recover,
+        extent_merge=extent_merge,
+        rel_path=rel,
+        live_inum=_inum,
+        oracle_body=oracle_body,
+        shadow_promote=shadow_promote,
     )
     pace = _ext2_volume_uses_pace_inode_layout(work_view, sb)
     if not cmdb_recover and not pace and inode_size and len(data) < inode_size:
@@ -308,6 +331,40 @@ def read_ext2_regular_file(
             f"ext2 read short for {rel!r}: got {len(data)} bytes, inode size {inode_size}"
         )
     return data
+
+
+def read_ext2_regular_file_by_inum(
+    slice_data: bytes,
+    inum: int,
+    *,
+    sb_off: int | None = None,
+    access: Ext2VolumeAccess | None = None,
+    extent_merge: bool = False,
+) -> bytes:
+    """Read a regular file by inode number (forensic / orphan-inode probes)."""
+    sb = sb_off if sb_off is not None else resolve_mountable_ext2_superblock_offset(slice_data)
+    if sb is None:
+        raise ValueError("ext2 volume not mountable (no superblock offset)")
+    work_view = _ext2_io_view(slice_data, sb).getvalue()
+    fields = _ext2_read_inode_fields(work_view, sb, inum, access=access)
+    if fields is None:
+        raise FileNotFoundError(f"inode {inum}")
+    mode, inode_size, i_block = fields
+    if not stat.S_ISREG(mode):
+        raise OSError(f"inode {inum} is not a regular file (mode={mode:#o})")
+    i_blocks = _ext2_read_inode_i_blocks(work_view, sb, inum, access=access)
+    return _ext2_read_file_bytes(
+        work_view,
+        sb,
+        i_block,
+        inode_size,
+        i_blocks=i_blocks,
+        i_mode=mode,
+        access=access,
+        extent_merge=extent_merge,
+        rel_path=f"inode:{inum}",
+        live_inum=inum,
+    )
 
 
 def ext2_file_map_report_for_path(

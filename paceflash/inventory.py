@@ -860,6 +860,7 @@ def build_inventory(
                     reg_active,
                     slice_name=tl_slice,
                     probe_embedded_squash=debug,
+                    collect_ntl_telemetry=debug,
                 )
             opentla4_extract_block = opentla4_extract_to_jsonable(opentla4_extract_result)
             if debug:

@@ -47,13 +47,15 @@ def temporary_registry_from_physical_nand(
         man_out: dict[str, Any] = dict(man)
         ot_session: LogicalOpenTLSession | None = None
         if spare_p.is_file() and spare_p.stat().st_size > 0:
-            log_p = td_p / "logical_plane.bin"
-            log_p.write_bytes(logical)
+            spare_bytes = spare_p.read_bytes()
             try:
-                ot, ot_session, attach_meta = nand_bootstrap.attach_open_tl_from_paths(
-                    log_p, spare_p
+                block_map, attach_meta = nand_bootstrap.attach_open_tl_block_map_from_bytes(
+                    logical,
+                    spare_bytes,
                 )
-                reg.attach_open_tl(ot)
+                reg.attach_open_tl_bbm(block_map, linear_prefix=logical)
+                reg._flat_oob_cache = spare_bytes  # type: ignore[attr-defined]
+                ot_session = reg.attached_logical_opentl_session
                 man_out.update(attach_meta)
             except Exception as e:
                 man_out["tl_bbm_attach_error"] = f"{type(e).__name__}: {e}"

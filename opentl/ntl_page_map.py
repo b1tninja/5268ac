@@ -92,6 +92,11 @@ def build_page_map(
                             flags_u16 = chain_slots[chain_idx].flags & 0xFF
                         if flags_u16 == 0:
                             vpage = ppage
+                        elif (spare[0xD] & 0xFF) == 64:  # PACE_SPARE_D_PAGE_TAG — not logical vpage 64
+                            # PACE tag 64: spare row on NAND page ``ppage``; payload is at ``ppage+1``
+                            # (see ``_nand_ppage_for_virt_read``). Key map by logical virt page ``ppage``,
+                            # not by the constant tag byte 64 (which broke lookup for logical page 22).
+                            vpage = ppage
                         else:
                             vpage = spare[0xD] & 0xFF
                         if vpage < max_pages and vpage not in m.pages:

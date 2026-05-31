@@ -143,8 +143,6 @@ def extract_virtual_disk_bytes(
 
 
 #region kernel_adjacent extract_virtual_disk_bytes_chain_aware
-# Host Python orchestration: mirrors ntl_read_page (0x80289170) try-chain-then-verify loop shape;
-# candidate phys order from ntl_put_chain_in_array (0x802888f8) spare-next replay (iter_mode2_phys_chain_from_oob).
 def extract_virtual_disk_bytes_chain_aware(
     logical_prefix: bytes,
     m: BlockMapBuild,
@@ -157,106 +155,27 @@ def extract_virtual_disk_bytes_chain_aware(
     verify_page: Callable[[int, int, bytes, bytes], bool] | None = None,
 ) -> tuple[bytes, int | None, int | None]:
     """
-    Virtual-disk extract with **mode-2 spare chain** candidate order (``ntl_put_chain_in_array`` /
-    ``ntl_find_phy`` analogue), then pick the first candidate that passes **optional** page verify.
+    Virtual-disk extract with **NTL mode-2** chain replay (``ntl_read_page`` / ``ntl_find_phy``).
 
-    Unlike :func:`extract_virtual_disk_bytes`, this walks **multiple physical erase units** along
-    spare ``next`` links from :func:`~opentl.spare_chain_replay.iter_mode2_phys_chain_from_oob` for
-    each **(virt_block, page_in_block)** before reading bytes. If no candidate yields an accepted
-    page window, output uses ``hole_fill_byte`` for those bytes (kernel ``memset`` after exhausted
-    verify loop — see ``reference/ghidra_boardfs_bbm_readpath.md``).
+    Delegates to :func:`opentl.ntl_rw.extract_virt_byte_range_ntl_rw` — the same implementation as
+    :func:`~opentl.ntl_rw.assemble_ntl_rw_slice`. Optional ``verify_page`` is applied **after**
+    kernel spare/ECC gates as an extra reject-and-continue predicate (P2 xsum helpers compose here).
 
-    ``flat_oob`` must satisfy :func:`~opentl.spare_chain_replay.spare_blob_matches_geo` for
-    ``m.geometry``. ``verify_page(phys, page_in_block, page_data, spare64)`` receives the **2048**
-    main slice and **64** spare for that phys/page; when ``None``, any candidate whose full NAND
-    page lies inside ``logical_prefix`` is accepted.
+    ``page_size_is_0x200`` is accepted for API compatibility; chain slot layout uses the same
+    large-page path as :mod:`opentl.ntl_rw`.
     """
-    geo = m.geometry
-    erase = int(geo.erase_bytes)
-    if not spare_blob_matches_geo(flat_oob, geo):
-        raise ValueError(
-            f"flat_oob length {len(flat_oob)} does not match geometry raw_blocks={geo.raw_blocks}"
-        )
+    _ = page_size_is_0x200
+    from opentl.ntl_rw import extract_virt_byte_range_ntl_rw
 
-    out = bytearray(virt_byte_length)
-    first_phys: Optional[int] = None
-    last_phys: Optional[int] = None
-    virt_disk_bytes = int(geo.virt_blocks) * erase
-    if virt_byte_start + virt_byte_length > virt_disk_bytes:
-        raise ValueError(
-            f"slice past virtual disk end: {virt_byte_start + virt_byte_length} > {virt_disk_bytes}"
-        )
-
-    chain_cache: dict[int, list[int]] = {}
-
-    def page_window(phys: int, page_in_block: int) -> Optional[bytes]:
-        base = phys * erase + page_in_block * KERNEL_NAND_PAGE_BYTES
-        end = base + KERNEL_NAND_PAGE_BYTES
-        if base < 0 or end > len(logical_prefix):
-            return None
-        return logical_prefix[base:end]
-
-    def default_verify(phys: int, page_in_block: int, page_data: bytes, spare64: bytes) -> bool:
-        _ = spare64
-        return len(page_data) == KERNEL_NAND_PAGE_BYTES
-
-    accept = verify_page if verify_page is not None else default_verify
-
-    gvirt = int(virt_byte_start)
-    end = gvirt + int(virt_byte_length)
-    out_pos = 0
-    fill = hole_fill_byte & 0xFF
-
-    while gvirt < end:
-        vb = gvirt // erase
-        vo = gvirt % erase
-        off_in_page = vo % KERNEL_NAND_PAGE_BYTES
-        chunk = min(KERNEL_NAND_PAGE_BYTES - off_in_page, end - gvirt)
-
-        if vb >= len(m.virt_to_phys_block):
-            raise ValueError(f"virt block index {vb} out of map range")
-        pb = m.virt_to_phys_block[vb]
-        if is_hole_phys_block(pb):
-            for i in range(chunk):
-                out[out_pos + i] = fill
-            out_pos += chunk
-            gvirt += chunk
-            continue
-
-        page_in_block = vo // KERNEL_NAND_PAGE_BYTES
-        if vb not in chain_cache:
-            chain_cache[vb] = iter_mode2_phys_chain_from_oob(
-                flat_oob,
-                geo,
-                start_phys=int(pb),
-                page_size_is_0x200=page_size_is_0x200,
-            )
-        chain = chain_cache[vb]
-        chosen: Optional[int] = None
-        # ``ntl_find_phy`` @ ``0x80288bd4``: index 0 first, not tail-first.
-        for phys in chain:
-            pg = page_window(phys, page_in_block)
-            if pg is None:
-                continue
-            sp = oob_page_spare(flat_oob, geo, phys, page_in_block)
-            if not accept(phys, page_in_block, pg, sp):
-                continue
-            off = phys * erase + vo
-            if 0 <= off < len(logical_prefix) and off + chunk <= len(logical_prefix):
-                chosen = off
-                out[out_pos : out_pos + chunk] = logical_prefix[off : off + chunk]
-                if first_phys is None:
-                    first_phys = off
-                last_phys = off + chunk - 1
-                break
-        if chosen is None:
-            for i in range(chunk):
-                out[out_pos + i] = fill
-
-        out_pos += chunk
-        gvirt += chunk
-
-    return bytes(out), first_phys, last_phys
+    return extract_virt_byte_range_ntl_rw(
+        logical_prefix,
+        m,
+        flat_oob,
+        virt_byte_start=int(virt_byte_start),
+        virt_byte_length=int(virt_byte_length),
+        hole_fill_byte=int(hole_fill_byte),
+        accept_page=verify_page,
+    )
 
 
 #endregion

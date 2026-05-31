@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from unand.geometry import PACE_DEFAULT
+from unand.s34ml import factory_bbi_bad_from_spare
 from unand.io import normalize_to_logical, sha256_logical_plane
 from unand.layout import RawDumpLayout, detect_layout_file
 from unand.mtd import DEFAULT_MTDPARTS, parse_mtdparts
@@ -104,12 +105,12 @@ def _cmd_hexdump(args: argparse.Namespace) -> int:
                 prev_block = cur_block
                 spare = page.spare or b""
                 erased = all(b == 0xFF for b in spare)
-                bad_block = spare[2] == 0x00 if len(spare) > 2 else False
+                factory_bad = factory_bbi_bad_from_spare(spare, 0) is True
                 status_parts = []
                 if erased:
                     status_parts.append("erased")
-                if bad_block:
-                    status_parts.append("bad-block")
+                if factory_bad:
+                    status_parts.append("factory-bad")
                 if not status_parts:
                     status_parts.append("good")
                 status = ",".join(status_parts)

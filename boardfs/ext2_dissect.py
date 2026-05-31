@@ -75,6 +75,28 @@ def _ext2_le32_block(raw: int) -> int:
     return raw & 0xFFFFFFFF
 
 
+def _ext2_branch_block_ptr_kernel_exact(raw: int) -> int:
+    """Stock ``ext2_get_branch``: ``bswap32`` / raw ``__le32`` only; stop at zero."""
+    blk = _ext2_le32_block(raw)
+    return blk if blk > 0 else 0
+
+
+def _ext2_branch_block_ptr(raw: int, last_block: int) -> int:
+    """
+    Pointer value for ``ext2_get_branch`` on a prepared dump volume.
+
+    Uses kernel ``__le32`` semantics first; when the stored word cannot be a valid
+    block number (corrupt tag / bit rot), apply :func:`_ext2_decode_block_ptr` so
+    mapping matches scrubbed pointer pages in :func:`_ext2_prepare_kernel_block_read`.
+    """
+    blk = _ext2_le32_block(raw)
+    if blk <= 0:
+        return 0
+    if last_block > 0 and blk > last_block:
+        blk = _ext2_decode_block_ptr(raw, last_block)
+    return blk if blk > 0 else 0
+
+
 def _ext2_repair_block_ptr(value: int, last_block: int) -> int:
     """
     Offline dump repair for tagged/corrupt ``__le32`` pointers (GD rows, indirect tables).
@@ -172,14 +194,88 @@ def _ext2_sanitize_pointer_block(
     return changed
 
 
+def _ext2_maybe_sanitize_pointer_continuation(
+    buf: bytearray,
+    table_blk: int,
+    *,
+    last_block: int,
+    blksz: int,
+) -> None:
+    """
+    Scrub ``table_blk + 1`` only when it looks like a PACE indirect-table continuation.
+
+    Kernel ``ext2_get_branch`` does not skip to ``ind_blk + 1``; on stock layouts the byte
+    after a singly-indirect table is **file data** (e.g. uImage table @ 4628, data @ 4629).
+    """
+    if table_blk + 1 >= len(buf) // blksz:
+        return
+    page = _ext2_fs_block(buf, table_blk, access=None, blksz=blksz)
+    if len(page) >= 2 and page[:2] == _PACE_INDIRECT_HDR_MAGIC:
+        _ext2_sanitize_pointer_block(buf, table_blk + 1, last_block=last_block, blksz=blksz)
+
+
+def _ext2_sanitize_singly_indirect_table(
+    buf: bytearray,
+    sind_blk: int,
+    *,
+    last_block: int,
+    blksz: int,
+) -> None:
+    """Repair ``__le32[]`` data-pointer page(s) for one singly-indirect table block."""
+    if sind_blk <= 0:
+        return
+    _ext2_sanitize_pointer_block(buf, sind_blk, last_block=last_block, blksz=blksz)
+    _ext2_maybe_sanitize_pointer_continuation(
+        buf, sind_blk, last_block=last_block, blksz=blksz
+    )
+
+
+def _ext2_sanitize_dind_pointer_page(
+    buf: bytearray,
+    dind_blk: int,
+    *,
+    last_block: int,
+    blksz: int,
+) -> None:
+    """
+    Kernel double-indirect: ``i_block[13]`` → dind page → singly-indirect tables → data.
+
+    ``ext2_block_to_path`` paths ``[13, x, y]`` use ``ext2_get_branch`` on each level; scrub
+    the dind page and every singly-indirect table it references (same as inode slot 12, but
+    reached through dind).
+    """
+    if dind_blk <= 0 or dind_blk > last_block:
+        return
+    _ext2_sanitize_pointer_block(buf, dind_blk, last_block=last_block, blksz=blksz)
+    _ext2_maybe_sanitize_pointer_continuation(
+        buf, dind_blk, last_block=last_block, blksz=blksz
+    )
+    dind_off = dind_blk * blksz
+    if dind_off + blksz > len(buf):
+        return
+    for i in range(0, blksz, 4):
+        v = struct.unpack_from("<I", buf, dind_off + i)[0]
+        if v == 0:
+            continue
+        sind = _ext2_decode_block_ptr(v, last_block)
+        if sind != v:
+            struct.pack_into("<I", buf, dind_off + i, sind)
+        if 0 < sind <= last_block:
+            _ext2_sanitize_singly_indirect_table(
+                buf, sind, last_block=last_block, blksz=blksz
+            )
+
+
 def _ext2_sanitize_inode_indirect_chain(
     buf: bytearray, sb_off: int, i_block: bytes, *, last_block: int | None = None, blksz: int | None = None
 ) -> None:
     """
-    PACE captures set 0x01 in the MSB of indirect/dind block pointers (same as GD rows).
+    Repair ``__le32`` pointer tables referenced by ``i_block[12..14]`` before kernel mapping.
 
-    Dissect walks i_block[12..14]; bad dind entries (e.g. ``0x0100d60b`` → ``54795``) must be
-    fixed before :func:`read_ext2_regular_file` can read large files like ``sys1/ui.img``.
+    Ghidra ``ext2_get_branch`` @ ``0x8013cb50`` only does ``bswap32`` + zero check; it does not
+    fix corrupt table cells. Offline dumps (and Dissect mount) need pointer **pages** scrubbed
+    when a stored word is ``> last_block`` but decodes to a valid block (e.g. ``0x0100123d`` →
+    block **4669**). This is dump repair, not PACE lag / sparse indirect / ``ff ac`` layout.
     """
     if len(i_block) < 60:
         return
@@ -188,26 +284,31 @@ def _ext2_sanitize_inode_indirect_chain(
         return
     bs = blksz if blksz is not None else _ext2_block_size(buf, sb_off)
     blocks = struct.unpack_from("<15I", i_block[:60])
+    if blocks[12]:
+        sind = _ext2_decode_block_ptr(blocks[12], lb)
+        if sind > 0:
+            _ext2_sanitize_singly_indirect_table(buf, sind, last_block=lb, blksz=bs)
     if blocks[13]:
-        ind = _ext2_decode_block_ptr(blocks[13], lb)
-        if ind > 0:
-            _ext2_sanitize_pointer_block(buf, ind, last_block=lb, blksz=bs)
-            if ind + 1 < len(buf) // bs:
-                _ext2_sanitize_pointer_block(buf, ind + 1, last_block=lb, blksz=bs)
+        dind = _ext2_decode_block_ptr(blocks[13], lb)
+        if dind > 0:
+            _ext2_sanitize_dind_pointer_page(buf, dind, last_block=lb, blksz=bs)
     if blocks[14]:
-        dind = _ext2_decode_block_ptr(blocks[14], lb)
-        _ext2_sanitize_pointer_block(buf, dind, last_block=lb, blksz=bs)
-        dind_off = dind * bs
-        if dind_off + bs <= len(buf):
-            for i in range(0, bs, 4):
-                v = struct.unpack_from("<I", buf, dind_off + i)[0]
-                if v == 0:
-                    continue
-                sind = _ext2_decode_block_ptr(v, lb)
-                if sind != v:
-                    struct.pack_into("<I", buf, dind_off + i, sind)
-                if sind > 0:
-                    _ext2_sanitize_pointer_block(buf, sind, last_block=lb, blksz=bs)
+        tind = _ext2_decode_block_ptr(blocks[14], lb)
+        if tind <= 0:
+            return
+        _ext2_sanitize_pointer_block(buf, tind, last_block=lb, blksz=bs)
+        tind_off = tind * bs
+        if tind_off + bs > len(buf):
+            return
+        for i in range(0, bs, 4):
+            v = struct.unpack_from("<I", buf, tind_off + i)[0]
+            if v == 0:
+                continue
+            dind = _ext2_decode_block_ptr(v, lb)
+            if dind != v:
+                struct.pack_into("<I", buf, tind_off + i, dind)
+            if dind > 0:
+                _ext2_sanitize_dind_pointer_page(buf, dind, last_block=lb, blksz=bs)
 
 
 _EXT2_FT_TO_KIND = {
@@ -313,8 +414,8 @@ def _ext2_read_indirect_ptrs(
         raw = struct.unpack_from("<I", page, i * 4)[0]
         if raw == 0:
             break
-        blk = _ext2_le32_block(raw)
-        if blk <= 0 or blk > last_block:
+        blk = _ext2_branch_block_ptr(raw, last_block)
+        if blk <= 0:
             break
         ptrs.append(blk)
     return ptrs
@@ -328,25 +429,71 @@ def _ext2_resolve_branch(
     last_block: int,
     blksz: int,
     access: Ext2VolumeAccess | None = None,
+    kernel_exact: bool = False,
 ) -> int:
-    """Walk ``ext2_get_branch`` (``0x8013cb50``): ``i_block[path[0]]`` then indirect slots."""
+    """
+    Walk ``ext2_get_branch`` (``0x8013cb50``): ``i_block[path[0]]`` then indirect slots.
+
+    Ghidra: each level ``__bread`` uses ``bswap32`` on the stored ``__le32``; loop stops when
+    the decoded pointer is **zero** only (no ``> last_block`` test in ``ext2_get_branch``).
+    When ``kernel_exact`` is false, call :func:`_ext2_prepare_kernel_block_read` before
+    mapping so scrubbed pointer pages match :func:`_ext2_branch_block_ptr` repair fallback.
+    """
     if not path:
         return 0
     slot = path[0]
     if slot >= len(ib):
         return 0
-    block = _ext2_le32_block(int(ib[slot]))
-    if block <= 0 or block > last_block:
+    def _decode_ptr(raw: int) -> int:
+        if kernel_exact:
+            return _ext2_branch_block_ptr_kernel_exact(raw)
+        return _ext2_branch_block_ptr(raw, last_block)
+
+    block = _decode_ptr(int(ib[slot]))
+    if block <= 0:
         return 0
     for idx in path[1:]:
         page = _ext2_fs_block(buf, block, access=access, blksz=blksz)
         off = idx * 4
         if off + 4 > len(page):
             return 0
-        block = _ext2_le32_block(struct.unpack_from("<I", page, off)[0])
-        if block <= 0 or block > last_block:
+        block = _decode_ptr(struct.unpack_from("<I", page, off)[0])
+        if block <= 0:
             return 0
     return block
+
+
+def _ext2_sanitize_i_block_bytes(i_block: bytes, *, last_block: int) -> bytes:
+    """Repair tagged ``i_block[0..14]`` slot values (offline; not in ``ext2_get_branch``)."""
+    ib = bytearray(i_block.ljust(60, b"\x00")[:60])
+    for i in range(15):
+        raw = struct.unpack_from("<I", ib, i * 4)[0]
+        if not raw:
+            continue
+        fixed = _ext2_decode_block_ptr(raw, last_block)
+        if fixed != raw:
+            struct.pack_into("<I", ib, i * 4, fixed)
+    return bytes(ib)
+
+
+def _ext2_prepare_kernel_block_read(
+    buf: bytes | bytearray,
+    sb_off: int,
+    i_block: bytes,
+) -> tuple[bytearray, bytes]:
+    """
+    Mutable volume + repaired ``i_block`` for ``ext2_get_branch``.
+
+    Returns ``(work, i_block_prepared)`` — map with ``i_block_prepared`` and read data
+    from ``work`` (not ``Ext2VolumeAccess.slice_bytes``) so scrubbed tables are visible.
+    """
+    work = buf if isinstance(buf, bytearray) else bytearray(buf)
+    lb = _ext2_last_block(work, sb_off)
+    if lb is None or lb <= 0:
+        return work, i_block
+    ib_prep = _ext2_sanitize_i_block_bytes(i_block, last_block=lb)
+    _ext2_sanitize_inode_indirect_chain(work, sb_off, ib_prep)
+    return work, ib_prep
 
 
 def _ext2_map_file_block(
@@ -360,6 +507,7 @@ def _ext2_map_file_block(
     access: Ext2VolumeAccess | None = None,
     base_shift: int = 0,
     log_block_size: int = 0,
+    kernel_exact: bool = False,
 ) -> int:
     """
     Map file-relative block index to a filesystem block (kernel ``ext2_get_block`` read path).
@@ -380,41 +528,30 @@ def _ext2_map_file_block(
         return 0
     path, _ = path_result
     return _ext2_resolve_branch(
-        buf, ib, path, last_block=last_block, blksz=blksz, access=access
+        buf,
+        ib,
+        path,
+        last_block=last_block,
+        blksz=blksz,
+        access=access,
+        kernel_exact=kernel_exact,
     )
 
 
-def _ext2_read_file_bytes(
+def _ext2_read_file_bytes_kernel_exact(
     buf: bytes | bytearray,
     sb_off: int,
     i_block: bytes,
     size: int,
     *,
-    i_blocks: int = 0,
-    i_mode: int = 0,
     access: Ext2VolumeAccess | None = None,
-    cmdb_recover: bool = False,
 ) -> bytes:
     """
-    Read a regular file via kernel ``ext2_get_block`` mapping.
+    Read a regular file via stock kernel ``ext2_get_block`` (no sanitize/repair/PACE lag).
 
-    Stops at ``i_size`` like ``generic_file_read``. Unmapped blocks are zero-filled (hole).
-    On PACE opentla4 volumes (``s_inode_size == 0``), uses the on-disk inode layout
-    (13 direct slots, indirect at slot 13, pointer lag). ``cmdb_recover=True`` forces
-    that path on any volume.
+    Maps with raw on-disk ``i_block[]`` and indirect pages; uses :class:`Ext2VolumeAccess`
+    for NTL chain replay when set.
     """
-    if cmdb_recover or _ext2_volume_uses_pace_inode_layout(buf, sb_off):
-        from boardfs.cmdb_extent_walker import recover_cmdb_file_bytes
-
-        return recover_cmdb_file_bytes(
-            buf,
-            sb_off,
-            i_block,
-            size,
-            i_blocks=i_blocks,
-            i_mode=i_mode,
-            access=access,
-        )
     lb = _ext2_last_block(buf, sb_off)
     blksz = _ext2_block_size(buf, sb_off)
     if lb is None or lb <= 0 or blksz <= 0 or size <= 0:
@@ -431,13 +568,82 @@ def _ext2_read_file_bytes(
             blksz=blksz,
             addr_per_block_bits=apb,
             access=access,
+            kernel_exact=True,
         )
         if bn <= 0:
             parts.append(b"\x00" * blksz)
             continue
         parts.append(_ext2_fs_block(buf, bn, access=access, blksz=blksz))
-    out = b"".join(parts)
-    return out[:size]
+    return b"".join(parts)[:size]
+
+
+def _ext2_read_file_bytes(
+    buf: bytes | bytearray,
+    sb_off: int,
+    i_block: bytes,
+    size: int,
+    *,
+    i_blocks: int = 0,
+    i_mode: int = 0,
+    access: Ext2VolumeAccess | None = None,
+    cmdb_recover: bool = False,
+    extent_merge: bool = False,
+    rel_path: str = "",
+    live_inum: int = 0,
+    oracle_body: bytes | None = None,
+    shadow_promote: bool = False,
+) -> bytes:
+    """
+    Read a regular file via kernel ``ext2_get_block`` mapping.
+
+    Stops at ``i_size`` like ``generic_file_read``. Unmapped blocks are zero-filled (hole).
+    Default path is :func:`_ext2_read_file_bytes_kernel_exact` (stock 12-direct + indirect,
+    no sanitize/repair/13-direct PACE walker). ``cmdb_recover=True`` uses CMDB extent
+    recovery; ``shadow_promote=True`` swaps stale live-map blocks from deleted orphan
+    shadow inodes; ``extent_merge=True`` repairs stale install-image inode maps (pkgstream
+    chunk oracle when ``oracle_body`` is set).
+    """
+    if cmdb_recover:
+        from boardfs.cmdb_extent_walker import recover_cmdb_file_bytes
+
+        return recover_cmdb_file_bytes(
+            buf,
+            sb_off,
+            i_block,
+            size,
+            i_blocks=i_blocks,
+            i_mode=i_mode,
+            access=access,
+        )
+    if extent_merge and live_inum > 0:
+        from boardfs.ext2_extent_merge import read_extent_merged_file_bytes
+
+        return read_extent_merged_file_bytes(
+            buf,
+            sb_off,
+            live_inum,
+            i_block,
+            size,
+            rel_path=rel_path,
+            i_blocks=i_blocks,
+            i_mode=i_mode,
+            access=access,
+            oracle_body=oracle_body,
+        )
+    if shadow_promote and live_inum > 0:
+        from boardfs.ext2_extent_merge import read_shadow_promoted_file_bytes
+
+        return read_shadow_promoted_file_bytes(
+            buf,
+            sb_off,
+            live_inum,
+            i_block,
+            size,
+            access=access,
+        )
+    return _ext2_read_file_bytes_kernel_exact(
+        buf, sb_off, i_block, size, access=access
+    )
 
 
 def ext2_file_map_report(
@@ -491,7 +697,13 @@ def ext2_file_map_report(
     markers = (b"<?xml", b"</CM>", b"</CM></ROOT>", b"scheduler0:days")
     for fb in range(show):
         phys = _ext2_map_file_block(
-            buf, i_block, fb, last_block=lb, blksz=blksz, addr_per_block_bits=apb
+            buf,
+            i_block,
+            fb,
+            last_block=lb,
+            blksz=blksz,
+            addr_per_block_bits=apb,
+            kernel_exact=True,
         )
         flags: list[str] = []
         if phys <= 0:
@@ -730,17 +942,12 @@ def _ext2_sb_fields(buf: bytes | bytearray, sb_off: int = _EXT2_SB0_OFF) -> dict
     }
 
 
-def _ext2_inode_byte_offset(
+def _ext2_inode_table_entry(
     buf: bytes | bytearray,
     sb_off: int,
     inum: int,
-) -> int | None:
-    """
-    Byte offset of inode ``inum`` in the assembled slice (``ext2_get_inode`` layout).
-
-    Group = ``(inode - 1) // inodes_per_group``; index = ``(inode - 1) % inodes_per_group``;
-    table block = ``bg_inode_table`` at GD offset **+8** (not ``+0``).
-    """
+) -> tuple[int, int, int, int] | None:
+    """Return ``(itbl_block, index, inode_size, blksz)`` for inode ``inum``."""
     fields = _ext2_sb_fields(buf, sb_off)
     ipg = fields["inodes_per_group"]
     blksz = fields["blksz"]
@@ -758,6 +965,61 @@ def _ext2_inode_byte_offset(
     )
     if itbl <= 0:
         return None
+    return itbl, index, inode_size, blksz
+
+
+def _ext2_inode_record_bytes(
+    buf: bytes | bytearray,
+    sb_off: int,
+    inum: int,
+    *,
+    access: Ext2VolumeAccess | None = None,
+) -> bytes | None:
+    """Raw inode record (``inode_size`` bytes) via assembled slice or ``access`` block I/O."""
+    entry = _ext2_inode_table_entry(buf, sb_off, inum)
+    if entry is None:
+        return None
+    itbl, index, inode_size, blksz = entry
+    linear_off = itbl * blksz + index * inode_size
+
+    def _read_at(linear: int, n: int) -> bytes | None:
+        block_num = linear // blksz
+        off_in = linear % blksz
+        if access is not None:
+            chunk = _ext2_fs_block(buf, block_num, access=access, blksz=blksz)
+        else:
+            off = block_num * blksz
+            if off + blksz > len(buf):
+                return None
+            chunk = bytes(buf[off : off + blksz])
+        if off_in + n <= len(chunk):
+            return chunk[off_in : off_in + n]
+        head = chunk[off_in:]
+        tail = _read_at((block_num + 1) * blksz, n - len(head))
+        if tail is None:
+            return None
+        return head + tail
+
+    if access is None and linear_off + inode_size > len(buf):
+        return None
+    return _read_at(linear_off, inode_size)
+
+
+def _ext2_inode_byte_offset(
+    buf: bytes | bytearray,
+    sb_off: int,
+    inum: int,
+) -> int | None:
+    """
+    Byte offset of inode ``inum`` in the assembled slice (``ext2_get_inode`` layout).
+
+    Group = ``(inode - 1) // inodes_per_group``; index = ``(inode - 1) % inodes_per_group``;
+    table block = ``bg_inode_table`` at GD offset **+8** (not ``+0``).
+    """
+    entry = _ext2_inode_table_entry(buf, sb_off, inum)
+    if entry is None:
+        return None
+    itbl, index, inode_size, blksz = entry
     off = itbl * blksz + index * inode_size
     if off + 60 > len(buf):
         return None
@@ -768,23 +1030,38 @@ def _ext2_read_inode_fields(
     buf: bytes | bytearray,
     sb_off: int,
     inum: int,
+    *,
+    access: Ext2VolumeAccess | None = None,
 ) -> tuple[int, int, bytes] | None:
     """Return ``(i_mode, i_size, i_block[:60])`` for ``inum`` (Linux ``ext2_get_inode``)."""
-    off = _ext2_inode_byte_offset(buf, sb_off, inum)
-    if off is None:
+    rec = _ext2_inode_record_bytes(buf, sb_off, inum, access=access)
+    if rec is None:
         return None
-    mode = struct.unpack_from("<H", buf, off)[0]
+    mode = struct.unpack_from("<H", rec, 0)[0]
     if not _ext2_valid_inode_mode(mode):
         return None
-    size = struct.unpack_from("<I", buf, off + 4)[0]
+    size = struct.unpack_from("<I", rec, 4)[0]
     if size > 0x10000000:
         return None
-    i_block = bytes(buf[off + 40 : off + 100])
+    i_block = bytes(rec[40:100])
     fields = _ext2_sb_fields(buf, sb_off)
     blk0 = struct.unpack_from("<I", i_block, 0)[0]
     if blk0 and _ext2_decode_block_ptr(blk0, fields["last_block"]) <= 0:
         return None
     return mode, size, i_block
+
+
+def _ext2_read_inode_i_blocks(
+    buf: bytes | bytearray,
+    sb_off: int,
+    inum: int,
+    *,
+    access: Ext2VolumeAccess | None = None,
+) -> int:
+    rec = _ext2_inode_record_bytes(buf, sb_off, inum, access=access)
+    if rec is None or len(rec) < 32:
+        return 0
+    return int(struct.unpack_from("<I", rec, 28)[0])
 
 
 def _ext2_dir_data_opaque(data: bytes, *, htree: bool = False) -> bool:

@@ -6,11 +6,18 @@ import json
 from pathlib import Path
 from typing import Iterator
 
+from boardfs.ext2_dissect import resolve_mountable_ext2_superblock_offset
+from boardfs.ext2_path import list_ext2_directory, read_ext2_regular_file
 from corpus.artifacts import CorpusArtifact
-from paceflash.flash_session import open_flash_registry
+from paceflash.ext2_file_extract import DEFAULT_SQUASH_IMAGE_PATHS, DEFAULT_UIMAGE_PATHS
+from paceflash.flash_session import _opentla4_volume_access, open_flash_registry
 from paceflash.mtd_partition_probes import run_mtd_partition_probes
 from paceflash.opentla4_extract import extract_opentla4_filesystem, opentla4_extract_to_jsonable
+from paceflash.uimage_kernel import uimage_to_vmlinux_elf
 from unand.mtd import DEFAULT_MTDPARTS
+
+# ext2 directory trees corpus walks when indexing lab NAND dumps.
+_CORPUS_EXT2_WALK_ROOTS: tuple[str, ...] = ("sys1", "sys2", "cm", "config")
 
 
 def _source_prefix(flash_path: Path, collection: str | None) -> str:
@@ -40,16 +47,129 @@ def _artifact(
     )
 
 
+def _corpus_ext2_static_paths() -> tuple[str, ...]:
+    """Paths to pull from opentla4 for corpus text / CMDB / squash carriers."""
+    from paceflash.board_info import _VERSION_EXT2_CANDIDATES
+    from paceflash.http_auth import _CMDB_EXT2_PATHS
+
+    version_paths = [path for path, _role in _VERSION_EXT2_CANDIDATES]
+    return tuple(
+        dict.fromkeys(
+            (
+                *DEFAULT_SQUASH_IMAGE_PATHS,
+                *DEFAULT_UIMAGE_PATHS,
+                *version_paths,
+                *_CMDB_EXT2_PATHS,
+            )
+        )
+    )
+
+
+def corpus_extracted_files_from_ext2(
+    slice_bytes: bytes,
+    *,
+    sb_off: int | None,
+    access: object | None = None,
+    max_file_bytes: int = 32 * 1024 * 1024,
+    walk_roots: tuple[str, ...] = _CORPUS_EXT2_WALK_ROOTS,
+) -> dict[str, bytes]:
+    """
+    Read indexable files from an assembled opentla4 ext2 slice.
+
+    Uses ``cmdb_recover=True`` so CMDB / sys1 paths resolve on lab dumps where
+    directory entries are opaque to plain dissect walks.
+    """
+    sb = sb_off if sb_off is not None else resolve_mountable_ext2_superblock_offset(slice_bytes)
+    if sb is None:
+        return {}
+
+    out: dict[str, bytes] = {}
+
+    def _add(path: str) -> None:
+        if path in out:
+            return
+        try:
+            body = read_ext2_regular_file(
+                slice_bytes,
+                path,
+                sb_off=sb,
+                access=access,  # type: ignore[arg-type]
+                cmdb_recover=True,
+            )
+        except (FileNotFoundError, OSError, ValueError):
+            return
+        if 0 < len(body) <= max_file_bytes:
+            out[path] = body
+
+    for path in _corpus_ext2_static_paths():
+        _add(path)
+
+    queue = list(walk_roots)
+    while queue:
+        rel = queue.pop(0)
+        try:
+            rows = list_ext2_directory(
+                slice_bytes,
+                rel,
+                sb_off=sb,
+                access=access,  # type: ignore[arg-type]
+                cmdb_recover=True,
+                cap=256,
+            )
+        except (OSError, ValueError):
+            continue
+        for row in rows:
+            name = str(row.get("name") or "")
+            if not name or name in (".", ".."):
+                continue
+            child = f"{rel}/{name}" if rel else name
+            if row.get("kind") == "dir":
+                queue.append(child)
+            elif row.get("kind") == "file":
+                _add(child)
+    return out
+
+
+def _squashfs_carve_bytes(data: bytes, off: int) -> bytes | None:
+    """Return a strict SquashFS blob starting at *off*, or ``None`` if not valid."""
+    if off < 0 or off + 4 > len(data) or data[off : off + 4] not in (b"hsqs", b"sqsh"):
+        return None
+    from lib2spy.native_pkgstream import squashfs_span_at
+
+    span = squashfs_span_at(data, off)
+    if span is None:
+        # Some vendor images have a SquashFS magic but an unexpected or corrupted
+        # superblock field layout (bytes_used check fails). If the file itself
+        # begins with SquashFS magic, treat the entire ext2 file as the image.
+        return data if off == 0 else None
+    start, slen = span
+    end = min(start + slen, len(data))
+    carved = data[start:end]
+    return carved if len(carved) >= 4 and carved[:4] in (b"hsqs", b"sqsh") else None
+
+
+def _uimage_payload(data: bytes) -> bool:
+    try:
+        from uboot.uimage import parse_uimage_header
+    except Exception:
+        return False
+    return parse_uimage_header(data[:64]) is not None
+
+
 def _squashfs_offsets(data: bytes, *, max_hits: int = 8) -> list[int]:
-    """Find plausible little-endian SquashFS magic offsets in an ext2 file."""
+    """Find plausible SquashFS magic offsets in an ext2 file (LE hsqs, BE sqsh)."""
     out: list[int] = []
-    start = 0
-    while len(out) < max_hits:
-        off = data.find(b"hsqs", start)
-        if off < 0:
+    for needle in (b"hsqs", b"sqsh"):
+        start = 0
+        while len(out) < max_hits:
+            off = data.find(needle, start)
+            if off < 0:
+                break
+            # Keep the raw magic offsets for callers/tests; carving/validation happens at emit time.
+            out.append(off)
+            start = off + 4
+        if len(out) >= max_hits:
             break
-        out.append(off)
-        start = off + 4
     return out
 
 
@@ -65,12 +185,17 @@ def iter_flash_corpus_artifacts(
     include_mtd: bool = True,
     include_ext2: bool = True,
     include_squashfs: bool = True,
+    include_uimage: bool = True,
+    lazy_assembly: bool = False,
 ) -> Iterator[CorpusArtifact]:
     """
     Yield normalized corpus artifacts from a Pace flash dump.
 
     Paceflash owns NAND logicalization, MTD slicing, BBM/TL assembly, ext2 extraction,
     and embedded SquashFS discovery. Corpus should only decide how to index these bytes.
+
+    Default ``lazy_assembly=False``: full opentla4 NTL assembly before walking all ext2
+    files (corpus reads the whole tree, not single-file ``cat`` paths).
     """
     src = Path(flash_path).expanduser().resolve()
     prefix = _source_prefix(src, collection)
@@ -121,12 +246,15 @@ def iter_flash_corpus_artifacts(
                 probe_loader=True,
                 probe_mtdoops=True,
             )
+            tlpart_bytes: bytes | None = None
             for name in ("loader", "mtdoops", "tlpart"):
                 try:
                     part = reg.partition_by_name(name)
                     blob = reg.flash.read_partition(name)
                 except Exception:
                     continue
+                if name == "tlpart":
+                    tlpart_bytes = blob
                 yield _artifact(
                     prefix,
                     "mtd_partition",
@@ -136,6 +264,8 @@ def iter_flash_corpus_artifacts(
                     offset=part.offset,
                     size=part.size,
                 )
+            # NOTE: board_param is indexed as a first-class typed record in corpus (see corpus.index_db),
+            # not as a synthetic file path (e.g. board_param/keys.txt) that suggests it existed on-device.
 
         if not include_ext2:
             return
@@ -144,6 +274,7 @@ def iter_flash_corpus_artifacts(
             reg,
             slice_name=tl_slice,
             probe_embedded_squash=include_squashfs,
+            lazy_assembly=lazy_assembly,
         )
         extract_meta = opentla4_extract_to_jsonable(result)
         yield _artifact(
@@ -164,8 +295,15 @@ def iter_flash_corpus_artifacts(
                 result.slice_bytes,
                 slice=tl_slice,
                 read_model=result.read_model,
+                ext2_superblock_offset=result.ext2_sb_offset,
             )
-        for rel, data in sorted(result.extracted_files.items()):
+        corpus_files = corpus_extracted_files_from_ext2(
+            result.slice_bytes,
+            sb_off=result.ext2_sb_offset,
+            access=result.access,
+        )
+        merged_files = {**result.extracted_files, **corpus_files}
+        for rel, data in sorted(merged_files.items()):
             ext2_logical_path = f"{tl_slice}/{rel}"
             ext2_file_source_key = _source_key(prefix, "ext2_file", ext2_logical_path)
             yield _artifact(
@@ -179,11 +317,43 @@ def iter_flash_corpus_artifacts(
                 parent_logical_path=f"{tl_slice}/{tl_slice}.ext2",
                 relationship="ext2_contains_file",
             )
+            if include_uimage and _uimage_payload(data):
+                yield _artifact(
+                    prefix,
+                    "uimage",
+                    f"{tl_slice}/uimage/{rel}",
+                    data,
+                    slice=tl_slice,
+                    ext2_path=rel,
+                    parent_source_key=ext2_file_source_key,
+                    parent_logical_path=ext2_logical_path,
+                    relationship="ext2_file_is_uimage",
+                )
+                conv = uimage_to_vmlinux_elf(data)
+                if conv.ok and conv.elf_bytes:
+                    yield _artifact(
+                        prefix,
+                        "kernel_elf",
+                        f"{tl_slice}/kernel_elf/{rel}.elf",
+                        conv.elf_bytes,
+                        slice=tl_slice,
+                        ext2_path=rel,
+                        parent_source_key=_source_key(prefix, "uimage", f"{tl_slice}/uimage/{rel}"),
+                        parent_logical_path=f"{tl_slice}/uimage/{rel}",
+                        relationship="uimage_converted_to_elf",
+                        ih_load=conv.peel.header.ih_load,
+                        ih_ep=conv.peel.header.ih_ep,
+                        kernel_inner_len=len(conv.peel.kernel_inner),
+                        member_decompressed=conv.peel.member_decompressed,
+                    )
             if include_squashfs:
                 offsets = _squashfs_offsets(data)
             else:
                 offsets = []
             for off in offsets:
+                carved = _squashfs_carve_bytes(data, off)
+                if carved is None:
+                    continue
                 logical = (
                     f"{tl_slice}/squashfs/{rel}"
                     if off == 0
@@ -193,7 +363,7 @@ def iter_flash_corpus_artifacts(
                     prefix,
                     "squashfs",
                     logical,
-                    data[off:],
+                    carved,
                     slice=tl_slice,
                     ext2_path=rel,
                     squashfs_offset=off,
@@ -203,4 +373,7 @@ def iter_flash_corpus_artifacts(
                 )
 
 
-__all__ = ["iter_flash_corpus_artifacts"]
+__all__ = [
+    "corpus_extracted_files_from_ext2",
+    "iter_flash_corpus_artifacts",
+]

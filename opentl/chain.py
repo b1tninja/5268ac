@@ -1,12 +1,14 @@
 """
 Doubly-linked physical-block chains used by OpenTL mount / allocator.
 
-Mirrors ``tl_init_chain`` seeding (``opentl_kernel_ghidra.md`` §11): **0x38**-byte
-header with **uint16** tag **0xD00D** at offset **0x20** (bytes **0x0D, 0xD0**
-in LE order), tail pointers initialized to **0xffffffff**.
+Kernel references (see ``reference/opentl_kernel_ghidra.md`` §11):
 
-This module provides **Python-level** chain primitives for tests and light-weight
-simulation — not a byte-for-byte reproduction of every ``tl_*`` helper.
+- ``tl_init_chain`` seeds a pool header and a per-physical-unit record table.
+- ``tl_add_chain`` / ``tl_delete_chain`` splice/unlink **physical unit indices** into a pool.
+- The pool is guarded by a **LE16** magic ``0xD00D`` and tracks **head**, **tail**, **count**.
+
+This module provides a kernel-shaped in-memory model intended for offline mount replay.
+It does **not** attempt to reproduce printk/debug verbosity or every ancillary helper.
 """
 
 from __future__ import annotations
@@ -69,11 +71,33 @@ class ChainLink:
     flags: int = 0
 
 
+class ChainError(ValueError):
+    pass
+
+
+@dataclass
+class ChainPoolHeader:
+    """
+    Kernel-shaped pool header metadata.
+
+    Indices use ``-1`` for "none" (kernel uses ``0xffffffff``); this keeps Python ergonomic.
+    """
+
+    magic: int = CHAIN_MAGIC_LE16
+    head: int = -1
+    tail: int = -1
+    count: int = 0
+    max_phys: int = -1  # inclusive upper bound for valid phys indices
+
+
 class ChainPool:
-    """tl_add_chain / tl_delete_chain style operations on phys indices."""
+    """Kernel-shaped pool of physical indices with tl_add_chain/tl_delete_chain semantics."""
 
     def __init__(self, raw_blocks: int) -> None:
-        self.raw_blocks = raw_blocks
+        if raw_blocks <= 0:
+            raise ValueError("raw_blocks must be positive")
+        self.raw_blocks = int(raw_blocks)
+        self.hdr = ChainPoolHeader(max_phys=self.raw_blocks - 1)
         self.links: dict[int, ChainLink] = {}
 
     def tl_init_chain(self, header: ChainHeader | None = None) -> bytes:
@@ -83,13 +107,33 @@ class ChainPool:
     def contains(self, phys: int) -> bool:
         return phys in self.links
 
+    def _check_magic(self) -> None:
+        if self.hdr.magic != CHAIN_MAGIC_LE16:
+            raise ChainError(f"bad chain magic {self.hdr.magic:#x}")
+
+    def _check_phys(self, phys: int) -> int:
+        self._check_magic()
+        p = int(phys)
+        if p < 0 or p > self.hdr.max_phys:
+            raise ChainError(f"phys {p} out of range (max {self.hdr.max_phys})")
+        return p
+
+    def tl_in_chain(self, phys: int) -> bool:
+        """Kernel `tl_in_chain`: membership test."""
+        try:
+            p = self._check_phys(phys)
+        except ChainError:
+            return False
+        return p in self.links
+
     def tl_chain_in(self, phys: int, prev: int, next_: int, *, flags: int = 0) -> None:
-        self.links[phys] = ChainLink(prev=prev, next=next_, flags=flags)
+        p = self._check_phys(phys)
+        self.links[p] = ChainLink(prev=int(prev), next=int(next_), flags=int(flags))
 
     def tl_follow(self, head: int) -> list[int]:
         """Walk ``next`` pointers until -1 / missing."""
         out: list[int] = []
-        p = head
+        p = int(head)
         seen: set[int] = set()
         while p != -1 and p not in seen:
             seen.add(p)
@@ -100,27 +144,56 @@ class ChainPool:
             p = link.next
         return out
 
-    def tl_add_chain(self, head_list: int, phys: int, after: int | None = None) -> None:
+    def tl_add_chain(self, pos: int, phys: int) -> None:
         """
-        Insert **phys** into a simple chain rooted at conceptual **head_list**
-        (we only track explicit links dict — caller maintains head index).
+        Kernel `tl_add_chain(pool, phys, pos)` where pos is 0=head, 1=tail.
         """
-        if after is None:
-            self.links[phys] = ChainLink(prev=-1, next=-1)
+        p = self._check_phys(phys)
+        if self.tl_in_chain(p):
+            raise ChainError(f"phys {p} already in chain")
+        if pos not in (0, 1):
+            raise ChainError(f"unknown_pos {pos}")
+
+        if self.hdr.count == 0:
+            self.links[p] = ChainLink(prev=-1, next=-1)
+            self.hdr.head = self.hdr.tail = p
+            self.hdr.count = 1
             return
-        dest = self.links.get(after)
-        nxt = -1 if dest is None else dest.next
-        self.links[phys] = ChainLink(prev=after, next=nxt)
-        if dest is not None:
-            dest.next = phys
-        if nxt != -1 and nxt in self.links:
-            self.links[nxt].prev = phys
+
+        if pos == 0:
+            old_head = self.hdr.head
+            self.links[p] = ChainLink(prev=-1, next=old_head)
+            if old_head in self.links:
+                self.links[old_head].prev = p
+            self.hdr.head = p
+            self.hdr.count += 1
+            return
+
+        old_tail = self.hdr.tail
+        self.links[p] = ChainLink(prev=old_tail, next=-1)
+        if old_tail in self.links:
+            self.links[old_tail].next = p
+        self.hdr.tail = p
+        self.hdr.count += 1
 
     def tl_delete_chain(self, phys: int) -> None:
-        lk = self.links.pop(phys, None)
-        if lk is None:
+        p = self._check_phys(phys)
+        if not self.tl_in_chain(p):
+            raise ChainError(f"phys {p} not in chain")
+        lk = self.links.pop(p)
+
+        if self.hdr.count == 1:
+            self.hdr.head = -1
+            self.hdr.tail = -1
+            self.hdr.count = 0
             return
+
         if lk.prev != -1 and lk.prev in self.links:
             self.links[lk.prev].next = lk.next
         if lk.next != -1 and lk.next in self.links:
             self.links[lk.next].prev = lk.prev
+        if self.hdr.head == p:
+            self.hdr.head = lk.next
+        if self.hdr.tail == p:
+            self.hdr.tail = lk.prev
+        self.hdr.count -= 1

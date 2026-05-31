@@ -36,7 +36,7 @@ from typing import Iterator, Optional
 from hexdumpy import PageView, hexdump_page as _core_hexdump_page, print_hexdump_page as _core_print
 from unand.geometry import NandGeometry, PACE_DEFAULT
 from unand.page_view import PageIterator
-from unand.s34ml import S34ML, S34ML01G1
+from unand.s34ml import S34ML, S34ML01G1, factory_bbi_bad_from_spare
 from unand.reader import NandPageReader
 
 
@@ -80,11 +80,16 @@ def hexdump_page(
 
     # Append manufacturer spare decode
     if page.spare:
-        decoded = chip.decode_spare(page.spare)
+        pinb = page_idx % (geom.erase_bytes // geom.page_data)
+        decoded = chip.decode_spare(page.spare, page_in_block=pinb)
         tag = decoded.get("tag_str", "N/A")
-        bad_block = decoded.get("bad_block", False)
+        factory_bad = decoded.get("factory_bbi_bad")
         erased = decoded.get("erased", False)
-        lines += f"\n  --- Decoded Spare (S34ML01G1): tag={tag} bad_block={bad_block} erased={erased} ---"
+        fbbi = "n/a" if factory_bad is None else str(factory_bad)
+        lines += (
+            f"\n  --- Decoded Spare (S34ML01G1): tag={tag} "
+            f"factory_bbi_bad={fbbi} erased={erased} ---"
+        )
 
     return lines
 
@@ -171,12 +176,12 @@ def dump_file(
                 prev_block = cur_block
                 spare = page.spare or b""
                 erased = all(b == 0xFF for b in spare)
-                bad_block = spare[2] == 0x00 if len(spare) > 2 else False
+                factory_bad = factory_bbi_bad_from_spare(spare, 0) is True
                 status_parts = []
                 if erased:
                     status_parts.append("erased")
-                if bad_block:
-                    status_parts.append("bad-block")
+                if factory_bad:
+                    status_parts.append("factory-bad")
                 if not status_parts:
                     status_parts.append("good")
                 status = ",".join(status_parts)
@@ -190,11 +195,16 @@ def dump_file(
 
             # Append manufacturer spare decode
             if page.spare:
-                decoded = chip.decode_spare(page.spare)
+                pinb = page_idx % pages_per_block
+                decoded = chip.decode_spare(page.spare, page_in_block=pinb)
                 tag = decoded.get("tag_str", "N/A")
-                bad_block = decoded.get("bad_block", False)
+                factory_bad = decoded.get("factory_bbi_bad")
                 erased = decoded.get("erased", False)
-                lines += f"\n  --- Decoded Spare (S34ML01G1): tag={tag} bad_block={bad_block} erased={erased} ---"
+                fbbi = "n/a" if factory_bad is None else str(factory_bad)
+                lines += (
+                    f"\n  --- Decoded Spare (S34ML01G1): tag={tag} "
+                    f"factory_bbi_bad={fbbi} erased={erased} ---"
+                )
 
             print(lines)
             page_idx += 1
@@ -298,12 +308,12 @@ def page_hexdump(
         for pidx, _data, spare in reader:
             if pidx % pages_per_block == 0:
                 erased = all(b == 0xFF for b in spare)
-                bad_block = spare[2] == 0x00 if len(spare) > 2 else False
+                factory_bad = factory_bbi_bad_from_spare(spare, 0) is True
                 status_parts = []
                 if erased:
                     status_parts.append("erased")
-                if bad_block:
-                    status_parts.append("bad-block")
+                if factory_bad:
+                    status_parts.append("factory-bad")
                 if not status_parts:
                     status_parts.append("good")
                 status = ",".join(status_parts)
@@ -325,8 +335,14 @@ def page_hexdump(
                     show_labels=True, address_mode="cumulative", page_idx=page_idx,
                 )
                 if spare:
-                    decoded = chip.decode_spare(spare)
-                    lines += f"\n  --- Decoded Spare (S34ML01G1): tag={decoded.get('tag_str', 'N/A')} ---"
+                    pinb = page_idx % pages_per_block
+                    decoded = chip.decode_spare(spare, page_in_block=pinb)
+                    fbbi = decoded.get("factory_bbi_bad")
+                    fbbi_s = "n/a" if fbbi is None else str(fbbi)
+                    lines += (
+                        f"\n  --- Decoded Spare (S34ML01G1): tag={decoded.get('tag_str', 'N/A')} "
+                        f"factory_bbi_bad={fbbi_s} ---"
+                    )
                 buf.append(lines)
 
     return "\n".join(buf)

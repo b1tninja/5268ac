@@ -27,6 +27,7 @@ from boardfs.ext2_path import (
     list_ext2_directory,
     read_ext2_regular_file,
 )
+from paceflash.uimage_oracle import resolve_uimage_oracle
 from opentl.driver import TranslateMode
 
 from paceflash.flash_session import (
@@ -118,7 +119,7 @@ class Ext2ShellSession:
         _apply_chain_aware_bbm_if_needed(
             reg, man, ot, bbm_chain_aware=config.bbm_chain_aware, tl_slice=config.tl_slice
         )
-        assembled = assemble_opentla4_volume(reg, slice_name=config.tl_slice)
+        assembled = assemble_opentla4_volume(reg, slice_name=config.tl_slice, lazy_assembly=True)
         if not assembled.slice_bytes:
             ctx.__exit__(None, None, None)
             raise RuntimeError(assembled.error or "no opentla4 slice bytes assembled")
@@ -322,26 +323,40 @@ class Ext2ShellSession:
 
     def cmd_cat(self, argv: list[str]) -> int:
         cmdb_recover = False
+        extent_merge: bool | None = None
         paths: list[str] = []
         for a in argv:
             if a == "--cmdb-recover":
                 cmdb_recover = True
+            elif a == "--no-extent-merge":
+                extent_merge = False
             elif a.startswith("-"):
                 print(f"paceflash: cat: unknown option: {a}", file=sys.stderr)
                 return 1
             else:
                 paths.append(a)
         if len(paths) != 1:
-            print("paceflash: usage: cat [--cmdb-recover] PATH", file=sys.stderr)
+            print(
+                "paceflash: usage: cat [--cmdb-recover] [--no-extent-merge] PATH",
+                file=sys.stderr,
+            )
             return 1
         rel = self._resolve(paths[0])
         try:
+            use_merge = extent_merge
+            if use_merge is None:
+                from boardfs.ext2_path import default_extent_merge_for_path
+
+                use_merge = default_extent_merge_for_path(rel)
+            oracle = resolve_uimage_oracle() if use_merge else None
             data = read_ext2_regular_file(
                 self.vol.slice_bytes,
                 rel,
                 sb_off=self.vol.sb_off,
                 access=self.vol.access,
                 cmdb_recover=cmdb_recover,
+                extent_merge=extent_merge,
+                oracle_body=oracle,
             )
         except IsADirectoryError:
             print(f"paceflash: is a directory: {display_path(rel)}", file=sys.stderr)

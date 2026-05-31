@@ -135,8 +135,10 @@ def _refs_from_lib2spy_dict(
     release_label: str,
     pkgstream_path: str,
 ) -> list[CarrierBlobRef]:
-    verify = data.get("verify") or {}
-    fp = verify.get("file_payload") or {}
+    verify = data.get("verify") or data
+    fp = verify.get("file_payload") if isinstance(verify, dict) else {}
+    if not fp and isinstance(data, dict):
+        fp = data.get("file_payload") or {}
     files = fp.get("files") or []
     parse_obj = data.get("parse") or data
     embedded = _embedded_by_offset(parse_obj if "embedded_images" in parse_obj else data.get("parse") or {})

@@ -11,6 +11,7 @@ from boardfs.squashfs_probe import SQUASHFS_MAGIC_LE
 from lib2spy.native_pkgstream import squashfs_le_span_at
 
 from boardfs.ext2_dissect import resolve_mountable_ext2_superblock_offset
+from boardfs.ext2_volume_io import Ext2VolumeAccess
 
 # Typical post-promote layout on opentla4 (see firmware_upgrade_process.md §5).
 DEFAULT_SQUASH_IMAGE_PATHS: tuple[str, ...] = (
@@ -20,6 +21,12 @@ DEFAULT_SQUASH_IMAGE_PATHS: tuple[str, ...] = (
     "sys1/ui.img",
     "sys2/ui.img",
     "ui.img",
+)
+
+# Install/recovery kernel on opentla4 (U-Boot ``ext2load opentl 0:5 … /sys1/uImage``).
+DEFAULT_UIMAGE_PATHS: tuple[str, ...] = (
+    "sys1/uImage",
+    "sys2/uImage",
 )
 
 _EMBEDDED_ROW_BASE: dict[str, Any] = {
@@ -40,6 +47,7 @@ def extract_ext2_file(
     path: str,
     *,
     sb_off: int | None = None,
+    access: Ext2VolumeAccess | None = None,
 ) -> tuple[bytes | None, dict[str, Any]]:
     """
     Read one embedded ``.img`` path from the ext2 **container** (file bytes are usually SquashFS).
@@ -56,15 +64,17 @@ def extract_ext2_file(
         meta["error"] = "ext2 container not mounted (no superblock offset)"
         meta["status"] = "ext2_unmounted"
         return None, meta
+    rel = path.lstrip("/")
     try:
         fs = _open_extfs_at_superblock(slice_data, sb)
-        node = fs.get(path.lstrip("/"))
+        node = fs.get(rel)
         if not stat.S_ISREG(node.inode.i_mode):
             meta["error"] = "not a regular file in ext2"
             meta["status"] = "missing_or_not_file"
             return None, meta
         with node.open() as fh:
             body = fh.read()
+        meta["read_model"] = "ext2_file_extract"
         meta["ext2_superblock_offset"] = sb
         meta["size"] = len(body)
         meta["status"] = "ok"
@@ -77,9 +87,46 @@ def extract_ext2_file(
                 meta["strict_squash_sha256"] = hashlib.sha256(body[:slen]).hexdigest()
         return body, meta
     except Exception as e:
+        meta["dissect_error"] = f"{type(e).__name__}: {e}"
+
+    # Lab NAND dumps: Dissect dentry miss; fall back to inode-faithful PACE read (not CMDB recovery).
+    try:
+        from boardfs.ext2_path import (
+            default_extent_merge_for_path,
+            default_shadow_promote_for_path,
+            read_ext2_regular_file,
+        )
+        from paceflash.uimage_oracle import resolve_uimage_oracle
+
+        rel = path.lstrip("/")
+        use_extent_merge = default_extent_merge_for_path(rel)
+        oracle = resolve_uimage_oracle() if use_extent_merge else None
+        body = read_ext2_regular_file(
+            slice_data,
+            rel,
+            sb_off=sb,
+            access=access,
+            cmdb_recover=False,
+            extent_merge=use_extent_merge,
+            shadow_promote=default_shadow_promote_for_path(rel),
+            oracle_body=oracle,
+        )
+    except Exception as e:
         meta["error"] = f"{type(e).__name__}: {e}"
         meta["status"] = "read_failed"
         return None, meta
+    meta["read_model"] = "ext2_file_extract+pace_inode"
+    meta["ext2_superblock_offset"] = sb
+    meta["size"] = len(body)
+    meta["status"] = "ok"
+    if len(body) >= 4 and body[:4] == SQUASHFS_MAGIC_LE:
+        meta["hsqs_at_file_start"] = True
+        span = squashfs_le_span_at(body, 0)
+        if span is not None:
+            _, slen = span
+            meta["strict_squash_len"] = slen
+            meta["strict_squash_sha256"] = hashlib.sha256(body[:slen]).hexdigest()
+    return body, meta
 
 
 def probe_embedded_squash_images(
@@ -108,6 +155,8 @@ probe_ext2_squash_files = probe_embedded_squash_images
 def ext2_file_sources_from_block_dev(
     dev: BlockSlice,
     paths: tuple[str, ...] = DEFAULT_SQUASH_IMAGE_PATHS,
+    *,
+    access: Ext2VolumeAccess | None = None,
 ) -> tuple[list[tuple[str, bytes]], list[dict[str, Any]], int | None]:
     """
     Return ``(correlation_sources, probe_rows, ext2_sb_off)``.
@@ -121,7 +170,7 @@ def ext2_file_sources_from_block_dev(
     sources: list[tuple[str, bytes]] = []
     if sb is not None:
         for path in paths:
-            body, _ = extract_ext2_file(data, path, sb_off=sb)
+            body, _ = extract_ext2_file(data, path, sb_off=sb, access=access)
             if body is not None:
                 sources.append((f"ext2_file:{path}", body))
     return sources, probe_rows, sb

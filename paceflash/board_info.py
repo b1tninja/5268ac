@@ -22,6 +22,7 @@ from typing import Any, Literal
 from acspy.cmdb import parse_mgmt_upgstate, parse_pkgs
 from boardfs.ext2_path import read_ext2_regular_file
 from paceflash.board_param import dump_paramtool
+from paceflash.cellular_identity import dump_cellular_identity
 from paceflash.factory_params import dump_factory_params
 from paceflash.flash_session import open_opentla4_ext2
 from paceflash.http_auth import _CMDB_EXT2_PATHS, read_cmdb_xml_text_from_bytes
@@ -415,5 +416,22 @@ def dump_board_info(
 
     if not fac.get("ok") and not any(v.get("ok") for v in version_files):
         out["ok"] = False
+
+    try:
+        out["cellular"] = dump_cellular_identity(
+            p,
+            cmdline=cmdline,
+            nand_translate=nand_translate,
+            nand_translate_mode=nand_translate_mode,
+            bbm_chain_aware=bbm_chain_aware,
+            include_tlpart_scan=include_tlpart_scan,
+            cmdb_paths=cmdb_paths,
+        )
+        if out["cellular"].get("qxdm_passcode"):
+            out["qxdm_passcode"] = out["cellular"]["qxdm_passcode"]
+            out["imei"] = out["cellular"].get("imei")
+    except Exception as e:
+        warnings.append(f"cellular identity: {type(e).__name__}: {e}")
+        out["cellular"] = {"ok": False, "error": str(e)}
 
     return out

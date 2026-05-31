@@ -53,6 +53,23 @@ def populate_tl_mount_arguments(p: argparse.ArgumentParser) -> None:
         ),
     )
     p.add_argument("--json", action="store_true", help="Print map JSON to stdout")
+    p.add_argument(
+        "--replay-mode",
+        type=str,
+        default="mount_v2",
+        help=(
+            "Mount replay strategy: mount_v2 (pool/chain-based), "
+            "kernel_replay_v2_chain_tail (legacy spare-scan + chain-tail collisions), "
+            "or any other value to fall back to the legacy spare-scan path."
+        ),
+    )
+    p.add_argument(
+        "--debug-out",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Optional: write mount_v2 replay debug JSON to this path (only meaningful for --replay-mode mount_v2).",
+    )
 
 
 def register_tl_mount_subparser(sub: Any) -> argparse.ArgumentParser:
@@ -82,7 +99,18 @@ def run_tl_mount_from_args(args: argparse.Namespace) -> int:
                 logical_prefix_bytes=args.logical_prefix_bytes,
                 nand_logical_offset=nand_off,
                 spare_bytes=spare_blob,
+                replay_mode=str(args.replay_mode),
             )
+            if args.debug_out and str(args.replay_mode) == "mount_v2":
+                from opentl.tl_mount.replay import build_virt_to_phys_from_mount_replay
+                from opentl.spare_chain_replay import tl_geometry_from_flat_spare
+
+                geo = tl_geometry_from_flat_spare(spare_blob)
+                _table, _n, _w, dbg = build_virt_to_phys_from_mount_replay(spare_blob, geo)
+                outp = Path(args.debug_out)
+                outp.parent.mkdir(parents=True, exist_ok=True)
+                outp.write_text(json.dumps(dbg, indent=2), encoding="utf-8")
+                print(f"Wrote {outp}", file=sys.stderr)
         else:
             ot_keep = OpenTL.from_flash_path_for_tl_mount(
                 str(flash_path),
@@ -92,6 +120,19 @@ def run_tl_mount_from_args(args: argparse.Namespace) -> int:
             )
             bmap = ot_keep.block_map
             bmap.notes.append("tl-mount: auto spare via unand LogicalPlane")
+            if args.debug_out and str(args.replay_mode) == "mount_v2":
+                from unand.plane import LogicalPlane
+                from opentl.tl_mount.replay import build_virt_to_phys_from_mount_replay
+                from opentl.spare_chain_replay import tl_geometry_from_flat_spare
+
+                plane = LogicalPlane.open_file(flash_path)
+                spare_blob = plane.flat_spare_bytes()
+                geo = tl_geometry_from_flat_spare(spare_blob)
+                _table, _n, _w, dbg = build_virt_to_phys_from_mount_replay(spare_blob, geo)
+                outp = Path(args.debug_out)
+                outp.parent.mkdir(parents=True, exist_ok=True)
+                outp.write_text(json.dumps(dbg, indent=2), encoding="utf-8")
+                print(f"Wrote {outp}", file=sys.stderr)
     except Exception as e:
         print(f"tl-mount: {e}", file=sys.stderr)
         return 1

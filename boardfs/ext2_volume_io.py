@@ -38,18 +38,26 @@ class Ext2VolumeAccess:
     When ``ntl`` is set, each read uses the same virt→phys path as
     :func:`opentl.ntl_rw.assemble_ntl_rw_slice` (kernel ``__bread`` on ``opentla4``).
     Otherwise uses the pre-assembled ``slice_bytes`` only.
+
+    With ``tag64_carrier_overlay`` (opt-in), a slice hit under PACE tag-64 spare pairing
+    may be replaced by prefix-plane +2048 bytes during uImage block-map reads.
     """
 
     slice_bytes: bytes | bytearray
     blksz: int
     ntl: Ext2NtlContext | None = None
     read_model: str = "linear"
+    tag64_carrier_overlay: bool = False
 
     def read_block(self, block_num: int) -> bytes:
         if block_num <= 0:
             return b"\x00" * self.blksz
         off = block_num * self.blksz
         if off + self.blksz <= len(self.slice_bytes):
+            if self.tag64_carrier_overlay:
+                from boardfs.tag64_carrier import apply_tag64_carrier_overlay
+
+                return apply_tag64_carrier_overlay(self, block_num)
             return bytes(self.slice_bytes[off : off + self.blksz])
         if self.ntl is not None:
             return read_ext2_filesystem_block(
@@ -117,7 +125,7 @@ def ext2_volume_access_from_assembly(
     blksz = 1024 << struct.unpack_from("<I", slice_bytes, sb_off + 24)[0]
     ntl: Ext2NtlContext | None = None
     if (
-        read_model == "ntl_rw_chain_replay"
+        read_model in ("ntl_rw_chain_replay", "ntl_rw_chain_replay_lazy")
         and reg_session is not None
         and reg_block_map is not None
         and flat_oob is not None

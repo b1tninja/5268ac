@@ -7,6 +7,8 @@ from typing import Any
 
 from opentl.driver import LogicalOpenTLSession, OpenTL, infer_tl_mount_nand_logical_offset
 from opentl.nand_translate import TranslateMode, nand_translate_to_bytes
+from opentl.tl_bbm import BlockMapBuild
+from opentl.tl_mount import mount_flash_image_from_bytes
 
 
 #region kernel_adjacent nand_bootstrap_translate_attach
@@ -18,6 +20,28 @@ def translate_physical_nand(
 ) -> tuple[bytes, dict[str, Any]]:
     """Stream logical plane bytes; write flat spare to ``spare_out``."""
     return nand_translate_to_bytes(raw_path, translate_mode, spare_out=spare_out)
+
+
+def attach_open_tl_block_map_from_bytes(
+    logical: bytes,
+    spare_bytes: bytes,
+) -> tuple[BlockMapBuild, dict[str, Any]]:
+    """Build BBM map from in-memory logical plane + flat spare (no temp logical file)."""
+    off = infer_tl_mount_nand_logical_offset(logical_image_size=len(logical))
+    block_map = mount_flash_image_from_bytes(
+        logical,
+        spare_bytes=spare_bytes,
+        nand_logical_offset=off,
+        logical_prefix_bytes=None,
+    )
+    meta: dict[str, Any] = {
+        "tl_bbm_attached": True,
+        "tl_bbm_mode": block_map.mode,
+        "flat_spare_bytes": len(spare_bytes),
+        "logical_prefix_bytes": int(block_map.logical_prefix_bytes),
+        "block_map": block_map,
+    }
+    return block_map, meta
 
 
 def attach_open_tl_from_paths(
@@ -42,6 +66,7 @@ def attach_open_tl_from_paths(
 
 
 __all__ = [
+    "attach_open_tl_block_map_from_bytes",
     "attach_open_tl_from_paths",
     "translate_physical_nand",
 ]

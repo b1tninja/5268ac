@@ -62,20 +62,17 @@ EDC (Error Detection Code) register content, and ID register data.
     Bit 6 — Write Fail Status
     Bit 7 — Toggle Status
 
-**ECC/EDC in Spare (OOB) bytes:**
-    For the S34ML large-page format (2048 B data + 64 B spare):
-      spare[0:3]  — ECC / EDC syndrome bytes
-      spare[3]    — Status / class byte (Status Register 1)
-      spare[4]    — Tag byte: '\\0' (0x00) or '$' (0x24) = tagged
-                   0xFF = erased / not yet programmed
-      spare[8]    — Chain/mirror flag bit (bit 4 = duplicate marker)
-      spare[9:10] — Physical block address (LE16)
-      spare[11:12] — Virtual block ID (LE16)
-      spare[13]   — Page index within erase block
-      spare[14]   — Checksum / xsum base
-      spare[15]   — Stored checksum (must match computed over spare bytes)
-      spare[16:17] — Physical address high bytes (32-bit extension)
-      spare[18:19] — Virtual address high bytes (32-bit extension)
+**Factory bad-block (datasheet §9.2, ``reference/pdfs/S34ML01G1.PDF`` p.69):**
+    On the **1st and 2nd page** of each erase block (0-based **0**, **1**), ``spare[0] != 0xFF``
+    marks a factory bad block. This is **not** ``spare[2]`` (ECC2 on programmed pages).
+    Runtime failures use Status Register pass/fail (§9.1), not factory spare markers.
+
+**528-byte EDC units (datasheet Table 3.3 / 3.4):**
+    Each page = four **512 + 16** byte groups (main + spare tail per sector).
+    ``spare[0:2]`` are the ECC syndromes for **sector A** only; §9.2 reuses ``spare[0]`` on pages 0–1.
+
+**Spare bytes often overlaid by OpenTL on Pace dumps** (virt/phys, xsum at ``spare[0x0F]``, tag at ``spare[4]``).
+    Use :func:`opentl.spare_layout.parse_spare` for runtime fields; ``decode_spare`` here is chip/datasheet view.
 
 --------
 
@@ -86,11 +83,12 @@ See also: ``reference/spare64_bbm_field_map.md`` (OpenTL field map),
 
 from __future__ import annotations
 
-import struct
 from abc import ABC
-from typing import List
+from pathlib import Path
+from typing import BinaryIO, List, Union
 
 from .chip import NandChip
+from .geometry import NandGeometry
 
 # ---------------------------------------------------------------------------
 # Shared geometry constants for all S34ML models
@@ -106,6 +104,34 @@ _ERASE_BYTES: int = 131072  # 128 KiB
 _PAGES_PER_BLOCK: int = 64
 #: Base number of erase blocks (multiplied by DENSITY)
 _BASE_BLOCKS: int = 1024
+
+#: Datasheet §9.2 — factory bad-block marker pages (1st and 2nd page, 0-based).
+#: ``spare[0]`` on either page must be ``0xFF`` for a good factory block.
+FACTORY_BBI_MARKER_PAGES: tuple[int, ...] = (0, 1)
+
+#: EDC unit size per datasheet Table 3.3 (512 B main + 16 B spare per sector).
+EDC_UNIT_DATA_BYTES: int = 512
+EDC_UNIT_SPARE_BYTES: int = 16
+EDC_UNITS_PER_PAGE: int = 4
+
+
+def factory_bbi_marker_page(page_in_block: int) -> bool:
+    """True if ``page_in_block`` is a datasheet §9.2 factory BBI marker page."""
+    return page_in_block in FACTORY_BBI_MARKER_PAGES
+
+
+def factory_bbi_bad_from_spare(spare: bytes, page_in_block: int) -> bool | None:
+    """Factory bad-block flag from one spare row (§9.2).
+
+    Returns ``None`` when ``page_in_block`` is not a marker page (1st / 2nd).
+    Returns ``True`` when ``spare[0] != 0xFF`` (factory-marked bad).
+    """
+    if page_in_block not in FACTORY_BBI_MARKER_PAGES:
+        return None
+    if len(spare) < 1:
+        return None
+    return spare[0] != 0xFF
+
 
 # ---------------------------------------------------------------------------
 # Status Register bitmasks (per S34ML01G1 datasheet)
@@ -133,6 +159,29 @@ def _status_str(flags: int, masks: dict[str, int]) -> str:
         if flags & bit:
             parts.append(name)
     return ",".join(parts) if parts else "OK"
+
+
+def _sr1_status_str(sr1: int) -> str:
+    masks = {
+        "PROG": SR1_PROGRAM_STATUS,
+        "ERS": SR1_ERASE_STATUS,
+        "PFAIL": SR1_PROGRAM_FAIL,
+        "EFAIL": SR1_ERASE_FAIL,
+        "ECC_UNCOR": SR1_ECC_UNCOR,
+        "CCE": SR1_CCE,
+        "PREV": SR1_PREVIOUS_STATUS,
+    }
+    return _status_str(sr1, masks)
+
+
+def edc_unit_spare_offset(unit_index: int) -> int:
+    """Byte offset within a 64-byte spare row for EDC unit ``unit_index`` (0..3).
+
+    Sector A spare starts at 0; B/C/D at 16/32/48 (Table 3.4 column 2048–2111).
+    """
+    if not 0 <= unit_index < EDC_UNITS_PER_PAGE:
+        raise ValueError(f"unit_index must be 0..{EDC_UNITS_PER_PAGE - 1}, got {unit_index}")
+    return unit_index * EDC_UNIT_SPARE_BYTES
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +263,61 @@ class S34ML(NandChip):
     # chain replay) lives in opentl/spare_layout.py and opentl/spare_chain_replay.py.
     # ------------------------------------------------------------------
 
-    def render_spare_table(self, raw: bytes, page_idx: int, geom) -> str:
+    def erase_block_factory_bad(self, marker_spares: dict[int, bytes]) -> bool:
+        """True if any §9.2 marker page in the block has ``spare[0] != 0xFF``.
+
+        Parameters
+        ----------
+        marker_spares : dict[int, bytes]
+            Spare rows keyed by ``page_in_block`` (typically keys ``0``, ``1``).
+        """
+        for pinb in FACTORY_BBI_MARKER_PAGES:
+            sp = marker_spares.get(pinb)
+            if sp is not None and factory_bbi_bad_from_spare(sp, pinb):
+                return True
+        return False
+
+    def marker_spare_rows_for_block(self, image: bytes, block: int) -> dict[int, bytes]:
+        """Return §9.2 marker spare rows for erase block ``block`` (inline 2048+64)."""
+        g = self.geometry
+        pages_per_block = g.erase_bytes // g.page_data
+        if not 0 <= block < g.num_blocks:
+            raise IndexError(f"block {block} out of range 0..{g.num_blocks - 1}")
+        out: dict[int, bytes] = {}
+        for pinb in FACTORY_BBI_MARKER_PAGES:
+            page = block * pages_per_block + pinb
+            spare_off = page * g.page_phys + g.page_data
+            end = spare_off + g.page_spare
+            if end > len(image):
+                raise ValueError(
+                    f"image too short for block {block} page {pinb}: need {end} bytes, have {len(image)}"
+                )
+            out[pinb] = image[spare_off:end]
+        return out
+
+    def scan_factory_bad_blocks(self, image: bytes) -> list[int]:
+        """Return erase-block indices factory-marked bad (inline 2048+64 layout)."""
+        g = self.geometry
+        pages_per_block = g.erase_bytes // g.page_data
+        bad: list[int] = []
+        for block in range(g.num_blocks):
+            for pinb in FACTORY_BBI_MARKER_PAGES:
+                page = block * pages_per_block + pinb
+                spare_off = page * g.page_phys + g.page_data
+                if spare_off + 1 > len(image):
+                    return bad
+                if image[spare_off] != 0xFF:
+                    bad.append(block)
+                    break
+        return bad
+
+    def factory_bbi_bad_from_block_spares(self, marker_spares: dict[int, bytes]) -> bool:
+        """True if §9.2 marks the erase block factory-bad (any marker page ``spare[0] != 0xFF``)."""
+        return self.erase_block_factory_bad(marker_spares)
+
+    def render_spare_table(
+        self, raw: bytes, page_idx: int, geom, *, page_in_block: int | None = None
+    ) -> str:
         """Render the spare area as a datasheet-accurate table (per Table 9.1).
 
         Parameters
@@ -244,11 +347,19 @@ class S34ML(NandChip):
         lines.append(f"  {'offset':>5s}  {'field':>18s}  {'value':>10s}  {'description'}")
         lines.append(f"  {'-----':>5s}  {'-----':>18s}  {'-----':>10s}  {'-----------'}")
 
-        # Byte 0-2: ECC Syndrome
+        pinb = page_in_block if page_in_block is not None else (page_idx % _PAGES_PER_BLOCK)
         ecc0, ecc1, ecc2 = raw[0], raw[1], raw[2]
-        lines.append(f"  00h     {'ECC syndrome':>18s}  {ecc0:02x}{ecc1:02x}{ecc2:02x}{'':>6s}  ECC/EDC syndrome bytes (data integrity)")
+        ecc_note = "ECC/EDC syndrome (bytes 0-2)"
+        if factory_bbi_marker_page(pinb):
+            if ecc0 == 0xFF:
+                ecc_note += "; §9.2 factory BBI good (spare[0]==FF)"
+            else:
+                ecc_note += f"; §9.2 FACTORY BAD (spare[0]={ecc0:02x})"
+        lines.append(
+            f"  00-02h  {'ECC / factory BBI':>18s}  {ecc0:02x}{ecc1:02x}{ecc2:02x}{'':>6s}  {ecc_note}"
+        )
 
-        # Byte 0: Tag (also in spare[4])
+        # Tag (spare[4])
         tag = raw[4]
         if tag == 0xFF:
             tag_desc = "0xFF       erased / not programmed"
@@ -258,40 +369,26 @@ class S34ML(NandChip):
             tag_desc = f"0x{tag:02x}      non-printable tag"
         lines.append(f"  04h     {'Tag':>18s}  {tag:02x}{'':>12s}  {tag_desc}")
 
-        # Byte 1: Status
         status = raw[3]
-        lines.append(f"  03h     {'Status (SR1)':>18s}  {status:02x}{'':>10s}  Status Register 1")
+        lines.append(f"  03h     {'Spare byte 3':>18s}  {status:02x}{'':>10s}  May mirror SR1 (70h) when programmed")
 
-        # Byte 2: Bad Block Indicator
-        bbi = raw[2]
-        if bbi == 0x00:
-            bbi_desc = "0x00       BAD block"
-        elif bbi == 0xFF:
-            bbi_desc = "0xFF       good block"
-        else:
-            bbi_desc = f"0x{bbi:02x}      unknown"
-        lines.append(f"  02h     {'Bad Block Ind.':>18s}  {bbi:02x}{'':>10s}  {bbi_desc}")
+        if len(raw) >= 20:
+            phys_blk = raw[9] | (raw[10] << 8)
+            virt_blk = raw[11] | (raw[12] << 8)
+            lines.append(
+                f"  09-0Ah  {'OpenTL phys lo':>18s}  {phys_blk:04x}{'':>10s}  Runtime overlay (not §9.2 factory BBI)"
+            )
+            lines.append(
+                f"  0B-0Ch  {'OpenTL virt lo':>18s}  {virt_blk:04x}{'':>10s}  Runtime overlay"
+            )
+            lines.append(
+                f"  0Dh     {'Page in block':>18s}  {raw[13]:02x}{'':>10s}  OpenTL page index"
+            )
+            lines.append(
+                f"  0Fh     {'OpenTL xsum':>18s}  {raw[15]:02x}{'':>10s}  Stored checksum (opentl/spare_layout)"
+            )
 
-        # Byte 3-4: Physical Block Number (LE16)
-        if len(raw) >= 10:
-            phys_lo = raw[9] if raw[9] is not None else 0
-            phys_hi = raw[10] if raw[10] is not None else 0
-            phys_blk = phys_lo | (phys_hi << 8)
-            lines.append(f"  09-0Ah  {'Physical Blk':>18s}  {phys_blk:04x}{'':>10s}  Physical block address (LE16)")
-
-        # Byte 5: Additional Spare Data
-        lines.append(f"  05h     {'Spare Data':>18s}  {raw[5]:02x}{'':>12s}  Reserved / spare data")
-
-        # Byte 6: XOR Checksum
-        lines.append(f"  06h     {'XOR Checksum':>18s}  {raw[6]:02x}{'':>10s}  XOR checksum of first bytes")
-
-        # Bytes 7-5F: Reserved
-        lines.append(f"  07-5Fh  {'Reserved':>18s}  {'-':>10s}  Reserved (unused)")
-
-        # Byte 60-63: Page Address
-        if len(raw) >= 64:
-            page_addr = raw[60] | (raw[61] << 8) | (raw[62] << 16) | (raw[63] << 24) if all(b is not None for b in raw[60:64]) else 0
-            lines.append(f"  60-63h  {'Page Address':>18s}  {page_addr:08x}{'':>10s}  Page address in block (LE32)")
+        lines.append(f"  05-07h  {'Reserved/vendor':>18s}  {'-':>10s}  Vendor / padding")
 
         # Summary
         lines.append(f"")
@@ -300,16 +397,18 @@ class S34ML(NandChip):
 
         return "\n".join(lines)
 
-    def decode_spare(self, raw: bytes) -> dict:
+    def decode_spare(self, raw: bytes, *, page_in_block: int | None = None) -> dict:
         """Decode NAND-specific fields from a 64-byte spare row.
 
         Returns only datasheet-defined fields:
-        - Status registers (SR1, SR2)
-        - Bad block indicator (spare[2])
-        - ECC syndrome bytes (spare[0:3])
-        - Tag byte (spare[4])
-        - Chain/mirror flag (spare[8])
-        - Raw spare bytes
+        - Factory bad-block indicator (§9.2: ``spare[0]`` on marker pages 0 and 1)
+        - ECC syndrome bytes for EDC unit A (``spare[0:3]``; byte 2 is not factory BBI)
+        - Spare byte 3 (may mirror SR1 when programmed — not authoritative on OpenTL dumps)
+        - Tag byte (``spare[4]``, often OpenTL class on Pace images)
+        - Chain/mirror flag (``spare[8]`` bit 2)
+
+        Pass ``page_in_block`` (0..63) to populate ``factory_bbi_bad``; otherwise it
+        is ``None`` (unknown — do not infer factory status from spare[2]).
 
         For OpenTL-specific decoding (virtual block addresses, checksum),
         use :func:`opentl.spare_layout.parse_spare` → :class:`SpareRecord`.
@@ -317,14 +416,17 @@ class S34ML(NandChip):
         if len(raw) != 64:
             raise ValueError(f"S34ML spare must be 64 bytes, got {len(raw)}")
 
-        # Status Register 1 (spare[3])
+        # Spare byte 3 — on fresh status reads mirrors SR1 (cmd 70h); on dumps often OpenTL data.
         sr1 = raw[3]
         sr1_flags = sr1 & 0x7F
 
-        # Bad block indicator (spare[2]) — per datasheet Table 9.1
-        bad_block = raw[2] == 0x00  # 0x00 = bad, 0x01 = good
+        factory_bbi_bad = (
+            factory_bbi_bad_from_spare(raw, page_in_block)
+            if page_in_block is not None
+            else None
+        )
 
-        # ECC syndrome bytes
+        # ECC syndromes for EDC unit A (large-page Table 3.3)
         ecc0, ecc1, ecc2 = raw[0], raw[1], raw[2]
 
         # Tag byte (spare[4])
@@ -337,22 +439,27 @@ class S34ML(NandChip):
         else:
             tag_str = f"0x{tag:02x}"
 
-        # Chain/mirror flag (bit 2 of spare[8])
+        # Chain/mirror flag (bit 2 of spare[8]) — OpenTL uses bit 4 for duplicate hop
         chain_flag = raw[8] & 0x04
 
-        # Status Register 2 (combine SR1 high bit + spare[8])
-        sr2 = (sr1 >> 7) | (raw[8] & 0x80)
-
-        # Erased check
         erased = sum(1 for b in raw if b == 0xFF) > 50
 
         return dict(
             raw=raw,
             status_register_1=sr1,
             status_register_1_flags=sr1_flags,
-            status_register_2=sr2,
-            bad_block=bad_block,
+            status_register_1_str=_sr1_status_str(sr1),
+            program_fail=bool(sr1 & SR1_PROGRAM_FAIL),
+            erase_fail=bool(sr1 & SR1_ERASE_FAIL),
+            ecc_uncorrectable=bool(sr1 & SR1_ECC_UNCOR),
+            factory_bbi_bad=factory_bbi_bad,
+            factory_bbi_marker=(
+                factory_bbi_marker_page(page_in_block)
+                if page_in_block is not None
+                else None
+            ),
             ecc_bytes=(ecc0, ecc1, ecc2),
+            edc_unit_a_spare=(raw[0:16] if len(raw) >= 16 else raw[0:3]),
             tag=tag,
             tag_str=tag_str,
             chain_flag=chain_flag,
@@ -362,7 +469,14 @@ class S34ML(NandChip):
     def decode_spare_stream(self, raw_all: bytes) -> List[dict]:
         """Decode an entire spare sidecar (all pages) into a list of dicts."""
         n_pages = len(raw_all) // 64
-        return [self.decode_spare(raw_all[i * 64:(i + 1) * 64]) for i in range(n_pages)]
+        pages_per_block = self.geometry.erase_bytes // self.geometry.page_data
+        return [
+            self.decode_spare(
+                raw_all[i * 64 : (i + 1) * 64],
+                page_in_block=i % pages_per_block,
+            )
+            for i in range(n_pages)
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -370,12 +484,17 @@ class S34ML(NandChip):
 # ---------------------------------------------------------------------------
 
 class S34ML01G1(S34ML):
-    """S34ML01G1 — Spansion 128 MiB NAND (2048 B data + 64 B spare, 1024 blocks)."""
+    """S34ML01G1 — Spansion 128 MiB NAND (2048 B data + 64 B spare, 1024 blocks).
+
+    Datasheet: ``reference/pdfs/S34ML01G1.PDF`` — 1-bit ECC per 528 B, §9.2 factory BBI on
+    erase-block pages 0–1, Read ID ``0x01F1`` (matches ``fwupgrade.txt`` ``id 0x01f1``).
+    """
 
     MODEL = "S34ML01G1"
     DENSITY = "01G"
     DENSITY_MULT = 1
     TECHNOLOGY = "NAND Revision 1"
+    FLASH_ID = 0x01F1
 
 
 class S34ML02G1(S34ML):
@@ -400,10 +519,6 @@ class S34ML04G1(S34ML):
 # Family: auto-detect from dump size (map built lazily at runtime)
 # ---------------------------------------------------------------------------
 
-from .geometry import NandGeometry
-from pathlib import Path
-from typing import BinaryIO, Union
-
 
 class S34MLFamily(ABC):
     """Factory for Spansion/Catalyst S34ML chip family.
@@ -418,7 +533,7 @@ class S34MLFamily(ABC):
     """
 
     @staticmethod
-    def _density_map() -> dict[int, tuple[str, NandGeometry]]:
+    def _density_map() -> dict[str, tuple[str, NandGeometry]]:
         """Build density map from all concrete S34ML subclasses."""
         result = {}
         for cls in S34ML.__subclasses__():
@@ -477,7 +592,7 @@ class S34MLFamily(ABC):
         return cls._make_chip(model, density)
 
     @classmethod
-    def _make_chip(cls, model: str, density: int) -> NandChip:
+    def _make_chip(cls, model: str, density: str) -> NandChip:
         """Create a NandChip instance."""
         for cls in [S34ML01G1, S34ML02G1, S34ML04G1]:
             if cls.MODEL == model:
@@ -499,6 +614,13 @@ __all__ = [
     "S34ML02G1",
     "S34ML04G1",
     "S34MLFamily",
+    "FACTORY_BBI_MARKER_PAGES",
+    "factory_bbi_marker_page",
+    "factory_bbi_bad_from_spare",
+    "edc_unit_spare_offset",
+    "EDC_UNIT_DATA_BYTES",
+    "EDC_UNIT_SPARE_BYTES",
+    "EDC_UNITS_PER_PAGE",
     # Status Register bitmasks
     "SR1_ECC_UNCOR",
     "SR1_ERASE_FAIL",
