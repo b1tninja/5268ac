@@ -413,10 +413,9 @@ def entries_to_rows(entries: Sequence[SbomEntry], *, repo_root: Optional[Path] =
 def resolve_collection_slug_arg(slug: Optional[str]) -> Optional[str]:
     if not slug:
         return None
-    s = normalize_collection_slug(slug)
-    if not s.startswith("version:") and re.match(r"^\d+\.\d+\.\d+\.\d+", s):
-        return f"version:{s}"
-    return s
+    from corpus.index_db import resolve_collection_slug_arg as _resolve
+
+    return _resolve(slug)
 
 
 __all__ = [

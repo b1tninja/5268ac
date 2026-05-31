@@ -15,6 +15,7 @@ LEGACY_CORPUS_DB_RELATIVE = Path(WORK_CORPUS_DIRNAME) / "corpus_index.sqlite"
 
 PKGSTREAM_BY_VERSION_RELATIVE = Path(WORK_CORPUS_DIRNAME) / "pkgstream_corpus_by_version"
 SBOM_DIR_RELATIVE = Path(WORK_CORPUS_DIRNAME) / "sbom"
+SECRETS_DIR_RELATIVE = Path(WORK_CORPUS_DIRNAME) / "secrets"
 GHIDRA_IMPORT_RELATIVE = Path(WORK_CORPUS_DIRNAME) / "ghidra_import"
 
 
@@ -92,6 +93,11 @@ def default_sbom_dir(repo_root: Path | None = None) -> Path:
     return (root / SBOM_DIR_RELATIVE).resolve()
 
 
+def default_secrets_dir(repo_root: Path | None = None) -> Path:
+    root = repo_root if repo_root is not None else repo_root_from_module()
+    return (root / SECRETS_DIR_RELATIVE).resolve()
+
+
 def default_pkgstream_staging_dir(repo_root: Path | None = None) -> Path:
     root = repo_root if repo_root is not None else repo_root_from_module()
     return (root / PKGSTREAM_BY_VERSION_RELATIVE).resolve()
@@ -103,10 +109,12 @@ __all__ = [
     "LEGACY_CORPUS_DB_RELATIVE",
     "PKGSTREAM_BY_VERSION_RELATIVE",
     "SBOM_DIR_RELATIVE",
+    "SECRETS_DIR_RELATIVE",
     "WORK_CORPUS_DIRNAME",
     "default_corpus_db_path",
     "default_pkgstream_staging_dir",
     "default_sbom_dir",
+    "default_secrets_dir",
     "ensure_corpus_db_parent",
     "legacy_corpus_db_path",
     "migrate_legacy_corpus_db",

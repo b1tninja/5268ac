@@ -19,7 +19,9 @@ description: >-
 
 The index answers *where* and *what name*; Ghidra answers *decompilation, xrefs, and types*. See **[ghidra-mcp-corpus](../.cursor/skills/ghidra-mcp-corpus/SKILL.md)** for kernel uImage, ramdisk tiers, and MCP endpoint semantics.
 
-Default database: **`work_corpus/corpus/index.sqlite`** (under the Docker-mounted **`work_corpus/`** tree). If you still have **`work_corpus/corpus_index.sqlite`** from an older index, the CLI reads it automatically; run **`python -m corpus --migrate-db`** once to move it.
+Default database: **`work_corpus/corpus/index.sqlite`** (under the Docker-mounted **`work_corpus/`** tree). Schema version **`corpus-index-v3`**: content dedup by **MD5** (primary) + **SHA-1** (pkgstream TLV lookup); grep hits include `content_md5` / `content_sha1`. Delete the DB and re-index after upgrading from v2 — no backfill.
+
+If you still have **`work_corpus/corpus_index.sqlite`** from an older index, the CLI reads it automatically; run **`python -m corpus --migrate-db`** once to move it.
 
 Default materialized tree: **`work_corpus/pkgstream_corpus_by_version/`**.
 
@@ -77,6 +79,8 @@ python -m corpus --format-summary --jsonl
 
 Patterns are **regex** unless **`-F`** (literal). **`-i`** ignores case. **`--limit N`** caps results.
 
+During active indexing, SQLite may return transient **`malformed`** / **`disk I/O`** / **`locked`** errors. **`corpus grep`** and **`file-history`** auto-retry (5 attempts, backoff). If a query still fails, use **`find` + `cat`** or wait for indexing to finish.
+
 ### Text (scripts, configs, line-oriented files)
 
 ```powershell
@@ -106,8 +110,11 @@ python -m corpus libcm_server
 ### Scope to one firmware collection
 
 ```powershell
-python -m corpus --collection "version:11.5.1.532678" -i httpd
-python -m corpus --collection "version:11.14.1.533857" --kind symbol FUN_
+python -m corpus grep --collection "pkgstream:firmware/00D09E/11.14.1.533857-PROD" -i httpd
+python -m corpus grep --collection "11.14.1.533857" --kind symbol FUN_   # warns if PROD+LAB both indexed
+python -m corpus grep -F cmdb_process --refs-only --limit 1 | python -m corpus cat
+python -m corpus find '*shadow' --refs-only | python -m corpus xargs cat
+python -m corpus find '*shadow' --refs-only -n 5 | python -m corpus xargs locate --jsonl
 ```
 
 ### Linker metadata (SONAME / NEEDED)
@@ -118,6 +125,17 @@ python -m corpus --explain-library libcm_server.so.0
 ```
 
 **Providers** = ELFs whose `DT_SONAME` matches; **consumers** = ELFs that list it under `DT_NEEDED` (typically `libfoo.so.0`, not `libfoo.so`).
+
+### Carrier metadata (pkgstream verify JSON)
+
+Per-collection **`pkgstream_metadata.json`** / **`certificate_metadata.json`** from lib2spy ingest are indexed in **`carrier_metadata`**, not as rootfs **`files`** rows. They do not appear in **`corpus find`** or **`file-history`**.
+
+```powershell
+python -m corpus grep verify_summary --kind carrier_meta
+python -m corpus grep -F db97c4498a2b --kind carrier_meta --collection "version:11.6.1.532855"
+```
+
+Hits use virtual path **`@carrier/pkgstream_metadata`**. Re-index a collection (without **`--fresh`**) to migrate old DB rows that still listed `pkgstream_metadata.json` as a file.
 
 ### Machine-readable hits
 
@@ -136,6 +154,54 @@ python -m corpus -i mount --jsonl --limit 20
 ## 3. Access materialized files on disk
 
 Search hits name an **image key** and an **inner path**. Use the helpers below to open the blob or inner file without re-dissecting pkgstreams.
+
+### Find files by path (no content search)
+
+List indexed file paths by glob, emitting stable refs you can pipe to `corpus cat` / `corpus xargs`:
+
+```powershell
+# One exact path (common for NAND ext2 materialization)
+python -m corpus find "opentla4/sys1/component.txt" --collection "nand:@PACE 5268AC S34ML01G1@TSOP48.BIN"
+
+# Single hit (quote globs on PowerShell: '*history' not *history)
+python -m corpus find "opentla4/sys1/component.txt" --collection "nand:@PACE 5268AC S34ML01G1@TSOP48.BIN" --refs-only --limit 1 | `
+  python -m corpus cat
+
+# find without --refs-only also works (tab-separated ref + image::path); --refs-only is clearer
+python -m corpus find '*history' --refs-only | python -m corpus xargs cat
+
+# All hits (xargs-style): ``==> ref`` header before each file; use ``--raw`` to concatenate blindly
+python -m corpus find '*shadow' --refs-only | python -m corpus xargs cat
+python -m corpus find '*shadow' --refs-only | python -m corpus cat   # same when stdin has multiple lines
+
+# Text files fall back to indexed ``text_lines`` when dissect cannot read the SquashFS carve
+
+# Cap how many refs are processed; skip extract failures without aborting the batch
+python -m corpus find '*shadow' --refs-only | python -m corpus xargs cat -n 10 --continue-on-error
+
+# Resolve paths only (no SquashFS extract)
+python -m corpus find '*shadow' --refs-only | python -m corpus xargs locate --jsonl
+
+# Multiple globs (repeat positional args)
+python -m corpus find "usr/sbin/*" "usr/bin/*" --collection "pkgstream:firmware/00D09E/11.14.1.533857-PROD"
+```
+
+### File history across firmware versions
+
+Group every indexed copy of a path by **content hash** and show which firmware versions each variant appears in (contrast with line-level `corpus grep` and global `corpus --duplicates`):
+
+```powershell
+python -m corpus file-history etc/shadow
+python -m corpus file-history etc/shadow --preview
+python -m corpus file-history etc/shadow --jsonl
+python -m corpus file-history etc/shadow --verbose
+python -m corpus file-history "rodata/sysinit/etc/shadow"
+python -m corpus file-history '*shadow'              # lists each matching path (etc/shadow, rodata/sysinit/etc/shadow, …)
+```
+
+With a glob, stderr lists all matching paths; each content-hash row includes a `paths=` column (comma-separated). JSONL includes a `paths` array per variant.
+
+Example: one `md5` row may span `10.5.1.504323 – 11.14.1.533857 (42 versions)`; a second row covers only `9.8.x` when `rma:` hash lines differ.
 
 ### Resolve by path substring or SHA-256
 
@@ -173,9 +239,13 @@ python -m corpus --children "squashfs_0x" --jsonl
 
 ### Duplicate identical files across images
 
+Global: any path sharing the same `files.md5` (not scoped to one path).
+
 ```powershell
 python -m corpus --duplicates --jsonl
 ```
+
+For one path (e.g. `etc/shadow`) use **`corpus file-history`** instead.
 
 ### DWARF (when index was built with `--dwarf`)
 
@@ -413,7 +483,28 @@ python -m corpus --buildroot-origin bin/busybox --collection version:11.14.1.533
 | `vendor_path` | Only on firmware (e.g. `lib2sp`, Broadcom blobs) |
 | `buildroot_only` | In Buildroot reference but not in this collection |
 
-`--list-buildroot` shows indexed `buildroot:*` images. Use **`--jsonl`** for machine-readable diff output.
+`--list-collections` lists firmware **`collection:*`** slugs (carriers and file counts; **`--jsonl`** for image keys). **`--list-buildroot`** shows indexed `buildroot:*` images. Use **`--jsonl`** for machine-readable diff output.
+
+### Cross-collection Buildroot versions report
+
+One pass over every indexed **`collection:version:*`** image: join **`etc/os-release`** (`file_versions`, `source=release_file`) with **`bin/busybox`** `.comment` (`elf_strings`) and flag metadata vs toolchain mismatches (e.g. os-release **2013.05** but gcc **2011.11**).
+
+```powershell
+# Metadata only (fast)
+python -m corpus --buildroot-versions-report --jsonl
+
+# Limit to one collection
+python -m corpus --buildroot-versions-report --collection version:11.14.1.533857
+
+# Optional stock/vendor counts per indexed buildroot:<profile>
+python -m corpus --build-index --buildroot work_corpus/toolchain/output/target --buildroot-profile 2011.11
+python -m corpus --buildroot-versions-report --buildroot-profiles 2011.11,2013.05 --jsonl
+```
+
+| Flag | Role |
+|------|------|
+| `--buildroot-elf PATH` | Canonical ELF for `.comment` (default `bin/busybox`) |
+| `--buildroot-profiles` | Comma-separated profiles; runs `diff_collection_vs_buildroot` counts only |
 
 ## 8. QEMU MIPS user-mode (Docker)
 
@@ -442,6 +533,7 @@ Requires a **materialized** `work_corpus/pkgstream_corpus_by_version/version_<ve
 | List staging collections | `Get-ChildItem work_corpus\pkgstream_corpus_by_version` |
 | Version strings in index | `python -m corpus --versions` |
 | Search (scoped) | `python -m corpus --collection "version:X" PATTERN` |
+| Find file paths (scoped) | `python -m corpus find "PATH_GLOB" --collection "version:X"` |
 | Symbols only | `… --kind symbol` |
 | Rodata only | `… --kind rodata` |
 | Resolve file / hash | `python -m corpus --file-info SUBSTRING` |
