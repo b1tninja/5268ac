@@ -23,8 +23,7 @@ _IMEI_IN_CMDM_RE = re.compile(r'<S N="IMEI">([^<]*)</S>')
 _IMEI_DIGITS_RE = re.compile(r"\b(\d{15})\b")
 _TLPART_IMEI_CTX = re.compile(
     rb'IMEI[\x00\s"\']{0,8}(\d{15})',
-    re.IGNORECASE,
-)
+    re.IGNORECASE)
 
 
 def qxdm_passcode_from_imei(imei: str | None) -> str | None:
@@ -101,16 +100,14 @@ def _read_cmdb_usim_from_ext2(
     nand_translate: bool,
     nand_translate_mode: str,
     bbm_chain_aware: bool,
-    paths: tuple[str, ...],
-) -> list[dict[str, Any]]:
+    paths: tuple[str, ...]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     with open_opentla4_ext2(
         flash_path,
         cmdline,
         nand_translate=nand_translate,
         nand_translate_mode=nand_translate_mode,  # type: ignore[arg-type]
-        bbm_chain_aware=bbm_chain_aware,
-    ) as vol:
+        bbm_chain_aware=bbm_chain_aware) as vol:
         for rel in paths:
             entry: dict[str, Any] = {"path": rel, "source": "ext2_opentla4"}
             try:
@@ -118,9 +115,7 @@ def _read_cmdb_usim_from_ext2(
                     vol.slice_bytes,
                     rel,
                     sb_off=vol.sb_off,
-                    access=vol.access,
-                    cmdb_recover=True,
-                )
+                    access=vol.access)
             except FileNotFoundError:
                 entry["ok"] = False
                 entry["error"] = "not found"
@@ -155,8 +150,7 @@ def dump_cellular_identity(
     nand_translate_mode: Literal["inline-2112", "flat-tail", "identity"] = "inline-2112",
     bbm_chain_aware: bool = False,
     include_tlpart_scan: bool = True,
-    cmdb_paths: tuple[str, ...] | None = None,
-) -> dict[str, Any]:
+    cmdb_paths: tuple[str, ...] | None = None) -> dict[str, Any]:
     """Read IMEI / QxDM passcode candidates from CMDB (+ optional tlpart scan)."""
     p = Path(flash_path).expanduser().resolve()
     warnings: list[str] = []
@@ -180,8 +174,7 @@ def dump_cellular_identity(
             nand_translate=nand_translate,
             nand_translate_mode=nand_translate_mode,
             bbm_chain_aware=bbm_chain_aware,
-            paths=paths,
-        )
+            paths=paths)
     except Exception as e:
         warnings.append(f"ext2 CMDB read: {type(e).__name__}: {e}")
         out["cmdb_ext2"] = []

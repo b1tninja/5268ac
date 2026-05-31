@@ -1,0 +1,27 @@
+name: 5268ac
+
+x-5268ac: &5268ac
+  image: 5268ac
+  build:
+    context: ../..
+    dockerfile: docker/qemu-mips/Dockerfile
+  working_dir: /work
+  volumes:
+    - ../..:/work
+    - ../../work_corpus:/work/work_corpus
+  environment:
+    PYTHONPATH: /work
+    QEMU_LD_PREFIX: ${QEMU_LD_PREFIX:-/work/work_corpus/toolchain/sysroots/version_11.14.1.533857}
+    TOOLCHAIN_SYSROOT: ${TOOLCHAIN_SYSROOT:-/usr/xcc/mips-unknown-linux-gnu/mips-unknown-linux-gnu/sysroot}
+
+services:
+  # Interactive shell — use explicit `run-mips` when binfmt is unavailable (Docker Desktop).
+  "5268ac":
+    <<: *5268ac
+    command: ["shell"]
+
+  # Optional: register qemu-mips binfmt so `./usr/bin/foo` executes via QEMU (Linux host / VM).
+  5268ac-binfmt:
+    <<: *5268ac
+    privileged: true
+    command: ["register-binfmt", "shell"]

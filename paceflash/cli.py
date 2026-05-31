@@ -17,8 +17,7 @@ from boardfs.ext2_path import (
     Ext2DirectoryOpaqueError,
     list_ext2_directory,
     normalize_ext2_path,
-    read_ext2_regular_file,
-)
+    read_ext2_regular_file)
 
 from paceflash.board_info import dump_board_info
 from paceflash.board_param import dump_paramtool
@@ -30,7 +29,6 @@ from paceflash.eapol_cert import dump_eapol_cert
 from paceflash.network_config import gen_network_config
 from paceflash.factory_params import dump_factory_params
 from paceflash.http_auth import dump_http_auth
-from paceflash.uimage_oracle import resolve_uimage_oracle
 from paceflash.inventory import build_inventory
 from paceflash.shell import Ext2ShellSession, ShellConfig, run_interactive, run_script
 from paceflash.upgrade_correlation import build_carrier_index
@@ -56,8 +54,7 @@ def _tl_disk_probe_report_env(enabled: bool):
 
 def _resolve_carrier_index_arg(
     firmware_collection: Path | None,
-    carrier_index: Path | None,
-) -> Path | None:
+    carrier_index: Path | None) -> Path | None:
     if carrier_index is not None:
         return carrier_index
     if firmware_collection is None:
@@ -80,8 +77,7 @@ def _resolve_flash_path(args: argparse.Namespace) -> Path:
 def _resolve_flash_and_path_operands(
     args: argparse.Namespace,
     *,
-    require_path: bool,
-) -> tuple[Path, str]:
+    require_path: bool) -> tuple[Path, str]:
     """
     Positionals are a single ``operands`` list so ``--flash`` before the subcommand works:
 
@@ -125,31 +121,26 @@ def _add_nand_args(ap: argparse.ArgumentParser) -> None:
     nand_grp.add_argument(
         "--nand-translate",
         action="store_true",
-        help="Logicalize full-chip Pace physical dumps before TL/ext2 (default)",
-    )
+        help="Logicalize full-chip Pace physical dumps before TL/ext2 (default)")
     nand_grp.add_argument(
         "--no-nand-translate",
         action="store_true",
-        help="Skip in-memory NAND logicalize (raw packed image only)",
-    )
+        help="Skip in-memory NAND logicalize (raw packed image only)")
     ap.add_argument(
         "--nand-mode",
         choices=("inline-2112", "flat-tail", "identity"),
         default="inline-2112",
-        help="NAND translate mode for full-chip physical dumps (default inline-2112)",
-    )
+        help="NAND translate mode for full-chip physical dumps (default inline-2112)")
     ap.add_argument(
         "--bbm-chain-aware",
         action="store_true",
-        help="Force spare-chain BBM virtual scan after NAND translate",
-    )
+        help="Force spare-chain BBM virtual scan after NAND translate")
 
 
 def _add_global_flash_options(
     ap: argparse.ArgumentParser,
     *,
-    suppress_if_unset: bool = False,
-) -> None:
+    suppress_if_unset: bool = False) -> None:
     """``--flash`` / ``--cmdline`` before or after the subcommand (``paceflash --flash X ls``)."""
     unset = argparse.SUPPRESS if suppress_if_unset else None
     ap.add_argument(
@@ -158,14 +149,12 @@ def _add_global_flash_options(
         dest="flash_opt",
         default=unset,
         metavar="PATH",
-        help="Flash dump path (alternative to positional FLASH on ls/cat)",
-    )
+        help="Flash dump path (alternative to positional FLASH on ls/cat)")
     ap.add_argument(
         "--cmdline",
         type=str,
         default=unset,
-        help="Kernel cmdline with mtdparts= (default: quiet rw + unand.mtd.DEFAULT_MTDPARTS)",
-    )
+        help="Kernel cmdline with mtdparts= (default: quiet rw + unand.mtd.DEFAULT_MTDPARTS)")
 
 
 def _add_subcommand_common_args(ap: argparse.ArgumentParser) -> None:
@@ -174,8 +163,7 @@ def _add_subcommand_common_args(ap: argparse.ArgumentParser) -> None:
         type=str,
         default="opentla4",
         metavar="NAME",
-        help="TL slice holding ext2 (default opentla4)",
-    )
+        help="TL slice holding ext2 (default opentla4)")
     _add_nand_args(ap)
 
 
@@ -183,8 +171,7 @@ def _add_operands_arg(
     ap: argparse.ArgumentParser,
     *,
     metavar: str,
-    help_text: str,
-) -> None:
+    help_text: str) -> None:
     ap.add_argument("operands", nargs="*", metavar=metavar, help=help_text)
 
 
@@ -205,16 +192,13 @@ def _run_ls_path(args: argparse.Namespace, flash_path: Path, *, ext2_path: str =
             slice_name=args.tl_slice,
             nand_translate=not args.no_nand_translate,
             nand_translate_mode=args.nand_mode,
-            bbm_chain_aware=getattr(args, "bbm_chain_aware", False),
-        ) as vol:
+            bbm_chain_aware=getattr(args, "bbm_chain_aware", False)) as vol:
             rows = list_ext2_directory(
                 vol.slice_bytes,
                 rel,
                 sb_off=vol.sb_off,
                 include_dot=getattr(args, "all", False),
-                access=vol.access,
-                cmdb_recover=getattr(args, "cmdb_recover", False),
-            )
+                access=vol.access)
             read_model = vol.read_model
             slice_name = vol.slice_name
     except NotADirectoryError as e:
@@ -240,8 +224,7 @@ def _run_ls_path(args: argparse.Namespace, flash_path: Path, *, ext2_path: str =
                     "read_model": read_model,
                     "entries": rows,
                 },
-                indent=2,
-            )
+                indent=2)
         )
     else:
         _print_path_ls(rows, long_fmt=getattr(args, "long", False))
@@ -255,8 +238,7 @@ def _run_shell(args: argparse.Namespace, flash_path: Path) -> int:
         tl_slice=args.tl_slice,
         nand_translate=not args.no_nand_translate,
         nand_translate_mode=args.nand_mode,
-        bbm_chain_aware=getattr(args, "bbm_chain_aware", False),
-    )
+        bbm_chain_aware=getattr(args, "bbm_chain_aware", False))
     print("paceflash: loading flash (NAND translate + ext2 mount)…", file=sys.stderr)
     try:
         session = Ext2ShellSession.open(config)
@@ -288,8 +270,7 @@ def _warn_binary_cat_to_tty(data: bytes) -> None:
         "dumping to this terminal may garble the display (cursor/UTF-8 state) even when "
         "later XML is valid — use -o FILE or inspect with a hex editor; run `reset` if "
         "the prompt breaks.",
-        file=sys.stderr,
-    )
+        file=sys.stderr)
 
 
 def _warn_cmdb_stride_corruption(data: bytes, rel: str) -> None:
@@ -304,8 +285,7 @@ def _warn_cmdb_stride_corruption(data: bytes, rel: str) -> None:
             "paceflash: warning: CMDB XML has 0xE8 where underscores (0x5F) are expected "
             "(often shown as 'è' in Windows consoles) — extent read is still corrupted. "
             "Save bytes with --output FILE and verify, or update boardfs/paceflash.",
-            file=sys.stderr,
-        )
+            file=sys.stderr)
 
 
 def _run_cat(args: argparse.Namespace, flash_path: Path) -> int:
@@ -320,20 +300,12 @@ def _run_cat(args: argparse.Namespace, flash_path: Path) -> int:
             slice_name=args.tl_slice,
             nand_translate=not args.no_nand_translate,
             nand_translate_mode=args.nand_mode,
-            bbm_chain_aware=getattr(args, "bbm_chain_aware", False),
-        ) as vol:
-            use_merge = False if getattr(args, "no_extent_merge", False) else None
-            oracle = None
-            if use_merge is not False and rel.rsplit("/", 1)[-1] == "uImage":
-                oracle = resolve_uimage_oracle(getattr(args, "pkgstream_oracle", None))
+            bbm_chain_aware=getattr(args, "bbm_chain_aware", False)) as vol:
             data = read_ext2_regular_file(
                 vol.slice_bytes,
                 rel,
                 sb_off=vol.sb_off,
                 access=vol.access,
-                cmdb_recover=getattr(args, "cmdb_recover", False),
-                extent_merge=use_merge,
-                oracle_body=oracle,
             )
     except IsADirectoryError as e:
         print(f"paceflash: is a directory: {e}", file=sys.stderr)
@@ -527,8 +499,7 @@ def _run_dump_cmdb_fw(args: argparse.Namespace, flash_path: Path | None) -> int:
         bbm_chain_aware=getattr(args, "bbm_chain_aware", False),
         include_tlpart_scan=not getattr(args, "no_tlpart_scan", False),
         tables=tables,
-        include_catalog=getattr(args, "catalog", False),
-    )
+        include_catalog=getattr(args, "catalog", False))
     if args.json:
         print(json.dumps(doc, indent=2))
     else:
@@ -562,8 +533,7 @@ def _run_dump_http_auth(args: argparse.Namespace, flash_path: Path) -> int:
         bbm_chain_aware=getattr(args, "bbm_chain_aware", False),
         redact=getattr(args, "redact", False),
         decode_password_hashes=getattr(args, "decode_hashes", False),
-        include_tlpart_scan=not getattr(args, "no_tlpart_scan", False),
-    )
+        include_tlpart_scan=not getattr(args, "no_tlpart_scan", False))
     if args.json:
         print(json.dumps(doc, indent=2))
     else:
@@ -608,8 +578,7 @@ def _run_dump_eapol_cert(args: argparse.Namespace, flash_path: Path) -> int:
         output_pem=None if stdout_pem else getattr(args, "output", None),
         output_p12=getattr(args, "p12", None),
         redact_password=getattr(args, "redact", False),
-        include_pem=stdout_pem,
-    )
+        include_pem=stdout_pem)
     if stdout_pem and doc.get("ok") and doc.get("decrypted"):
         pem = doc.get("pem")
         if not isinstance(pem, str):
@@ -663,8 +632,7 @@ def _run_gen_network_config(args: argparse.Namespace) -> int:
     if flash_path is None and getattr(args, "client_pem", None) is None:
         print(
             "paceflash: gen-network-config requires --flash, a FLASH operand, or --client-pem",
-            file=sys.stderr,
-        )
+            file=sys.stderr)
         return 2
     doc = gen_network_config(
         interface=getattr(args, "interface", "wan0"),
@@ -685,8 +653,7 @@ def _run_gen_network_config(args: argparse.Namespace) -> int:
         flash_path=flash_path,
         cert=getattr(args, "cert", "lightspeed"),
         include_p12=not getattr(args, "no_p12", False),
-        dry_run=getattr(args, "dry_run", False),
-    )
+        dry_run=getattr(args, "dry_run", False))
     if args.json:
         print(json.dumps(doc, indent=2))
     else:
@@ -736,8 +703,7 @@ def _run_paramtool(args: argparse.Namespace, flash_path: Path) -> int:
         nand_translate=not getattr(args, "no_nand_translate", False),
         nand_translate_mode=getattr(args, "nand_mode", "inline-2112"),
         redact=getattr(args, "redact", False),
-        include_p12_b64=not getattr(args, "no_p12", False),
-    )
+        include_p12_b64=not getattr(args, "no_p12", False))
     if args.json:
         print(json.dumps(doc, indent=2))
     else:
@@ -847,8 +813,7 @@ def _run_board_info(args: argparse.Namespace, flash_path: Path) -> int:
         nand_translate_mode=getattr(args, "nand_mode", "inline-2112"),
         bbm_chain_aware=getattr(args, "bbm_chain_aware", False),
         redact=getattr(args, "redact", False),
-        include_tlpart_scan=not getattr(args, "no_tlpart_scan", False),
-    )
+        include_tlpart_scan=not getattr(args, "no_tlpart_scan", False))
     if args.json:
         print(json.dumps(doc, indent=2))
     else:
@@ -864,8 +829,7 @@ def _run_factory_params(args: argparse.Namespace, flash_path: Path) -> int:
         nand_translate=nand_translate,
         nand_translate_mode=getattr(args, "nand_mode", "inline-2112"),
         hint_offset=getattr(args, "offset", None),
-        redact=getattr(args, "redact", False),
-    )
+        redact=getattr(args, "redact", False))
     if args.json:
         print(json.dumps(doc, indent=2))
     else:
@@ -1101,15 +1065,13 @@ def _run_ls_inventory(args: argparse.Namespace, flash_path: Path) -> int:
             firmware_collection=getattr(args, "firmware_collection", None),
             carrier_index_json=_resolve_carrier_index_arg(
                 getattr(args, "firmware_collection", None),
-                getattr(args, "carrier_index", None),
-            ),
+                getattr(args, "carrier_index", None)),
             probe_loader_env=getattr(args, "probe_loader_env", False),
             probe_mtdoops=getattr(args, "probe_mtdoops", False),
             mtdoops_record_size=getattr(args, "mtdoops_record_size", 131072),
             dump_opentla4_ext2=getattr(args, "dump_opentla4_ext2", None),
             extract_ext2_dir=getattr(args, "extract_ext2_dir", None),
-            debug=debug,
-        )
+            debug=debug)
     warnings = inv.get("warnings", [])
     if debug and isinstance(warnings, list):
         _emit_warnings([str(w) for w in warnings])
@@ -1129,14 +1091,12 @@ def _run_ls_inventory(args: argparse.Namespace, flash_path: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="paceflash",
-        description="List or read opentla4 ext2 on a Pace flash dump; use --debug for full inventory.",
-    )
+        description="List or read opentla4 ext2 on a Pace flash dump; use --debug for full inventory.")
     _add_global_flash_options(ap)
     sub = ap.add_subparsers(dest="command", required=True)
     ls = sub.add_parser(
         "ls",
-        help="List a directory on the TL slice ext2 volume (default /)",
-    )
+        help="List a directory on the TL slice ext2 volume (default /)")
     _add_global_flash_options(ls, suppress_if_unset=True)
     _add_subcommand_common_args(ls)
     _add_operands_arg(
@@ -1144,34 +1104,29 @@ def main(argv: list[str] | None = None) -> int:
         metavar="[FLASH] [PATH]",
         help_text=(
             "With --flash: ext2 directory (default /). Otherwise: flash dump path, then optional ext2 path"
-        ),
-    )
+        ))
     ls.add_argument("-a", "--all", action="store_true", help="Include . and .. entries")
     ls.add_argument("-l", "--long", action="store_true", help="Long listing (mode + name)")
     ls.add_argument("--json", action="store_true", help="JSON directory listing, or full inventory with --debug")
     ls.add_argument(
         "--debug",
         action="store_true",
-        help="Full flash inventory (MTD, BBM, TL, UBI) instead of a single-directory listing",
-    )
+        help="Full flash inventory (MTD, BBM, TL, UBI) instead of a single-directory listing")
     ls.add_argument("--no-ext2", action="store_true", help="With --debug: skip ext2 carve")
     ls.add_argument(
         "--no-squashfs",
         action="store_true",
-        help="With --debug: skip embedded SquashFS probes in ext2",
-    )
+        help="With --debug: skip embedded SquashFS probes in ext2")
     ls.add_argument(
         "--ubi-erase-bytes",
         type=int,
         default=131072,
         metavar="N",
-        help="With --debug: PEB erase size for UBI VID scan (default 131072)",
-    )
+        help="With --debug: PEB erase size for UBI VID scan (default 131072)")
     ls.add_argument(
         "--tl-probe-report",
         action="store_true",
-        help="With --debug: emit TLDiskProbeReport on TL enumeration failure",
-    )
+        help="With --debug: emit TLDiskProbeReport on TL enumeration failure")
     ls.add_argument(
         "--dump-tl-slice",
         type=Path,
@@ -1179,8 +1134,7 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PATH",
         help=(
             "Write raw TL child partition bytes for --tl-slice to PATH (SquashFS magic may not be at offset 0)"
-        ),
-    )
+        ))
     ls.add_argument(
         "--dump-opentla4-ext2",
         type=Path,
@@ -1189,8 +1143,7 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Write assembled opentla4 ext2 partition image (same bytes as --dump-tl-slice when "
             "--tl-slice opentla4); use debugfs/e2tools on the output"
-        ),
-    )
+        ))
     ls.add_argument(
         "--extract-ext2-dir",
         type=Path,
@@ -1199,8 +1152,7 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Extract sys1/rootimage.img, sys2/rootimage.img, etc. from opentla4 ext2 into DIR "
             "(writes manifest.json with sizes and strict squash SHA when applicable)"
-        ),
-    )
+        ))
     ls.add_argument(
         "--lib2spy-json",
         type=Path,
@@ -1209,15 +1161,13 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "lib2spy verify JSON for carrier squash FILE fingerprints; enables upgrade_nand_correlation "
             "and anchored SquashFS dissect/carve on TL views"
-        ),
-    )
+        ))
     ls.add_argument(
         "--pkgstream",
         type=Path,
         default=None,
         metavar="PATH",
-        help="Optional .pkgstream path to compute SHA-256 carrier refs (with --lib2spy-json)",
-    )
+        help="Optional .pkgstream path to compute SHA-256 carrier refs (with --lib2spy-json)")
     ls.add_argument(
         "--firmware-collection",
         type=Path,
@@ -1226,8 +1176,7 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Device firmware tree (e.g. firmware/00D09E): correlate NAND against every install "
             ".pkgstream under DIR (rootimage.img + ui.img). Overrides --lib2spy-json when set."
-        ),
-    )
+        ))
     ls.add_argument(
         "--carrier-index",
         type=Path,
@@ -1236,44 +1185,37 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Prebuilt carrier digest JSON from `paceflash build-carrier-index` "
             f"(default tries {_DEFAULT_CARRIER_INDEX} when using --firmware-collection)"
-        ),
-    )
+        ))
     ls.add_argument(
         "--probe-loader-env",
         action="store_true",
-        help="Parse U-Boot env v1 at loader MTD base (linear slice; bootcmd/mtdparts)",
-    )
+        help="Parse U-Boot env v1 at loader MTD base (linear slice; bootcmd/mtdparts)")
     ls.add_argument(
         "--probe-mtdoops",
         action="store_true",
-        help="Scan mtdoops MTD slice for panic/oops records (linear; default record_size 131072)",
-    )
+        help="Scan mtdoops MTD slice for panic/oops records (linear; default record_size 131072)")
     ls.add_argument(
         "--mtdoops-record-size",
         type=int,
         default=131072,
         metavar="N",
-        help="mtdoops record_size for --probe-mtdoops (default 131072 per fwupgrade cmdline)",
-    )
+        help="mtdoops record_size for --probe-mtdoops (default 131072 per fwupgrade cmdline)")
 
     sh = sub.add_parser(
         "shell",
-        help="Interactive ext2 shell (flash loaded once; ls, cd, cat, pwd)",
-    )
+        help="Interactive ext2 shell (flash loaded once; ls, cd, cat, pwd)")
     _add_global_flash_options(sh, suppress_if_unset=True)
     _add_subcommand_common_args(sh)
     _add_operands_arg(
         sh,
         metavar="[FLASH]",
-        help_text="Flash dump (optional when using --flash before shell)",
-    )
+        help_text="Flash dump (optional when using --flash before shell)")
     sh.add_argument(
         "-c",
         "--command",
         dest="shell_command",
         metavar="CMD",
-        help="Run one shell command and exit (non-interactive)",
-    )
+        help="Run one shell command and exit (non-interactive)")
 
     cat = sub.add_parser("cat", help="Print a regular file from the TL slice ext2 volume")
     cat.add_argument(
@@ -1281,24 +1223,7 @@ def main(argv: list[str] | None = None) -> int:
         "-o",
         type=Path,
         metavar="FILE",
-        help="Write file bytes to FILE instead of stdout (avoids PowerShell text redirect)",
-    )
-    cat.add_argument(
-        "--cmdb-recover",
-        action="store_true",
-        help="Physical CMDB extent recovery (not kernel ext2); default is kernel-faithful read",
-    )
-    cat.add_argument(
-        "--no-extent-merge",
-        action="store_true",
-        help="Disable stale-inode uImage repair (default: repair enabled for sys1/uImage)",
-    )
-    cat.add_argument(
-        "--pkgstream-oracle",
-        type=Path,
-        metavar="PKGSTREAM",
-        help="Carrier pkgstream for per-block uImage chunk-oracle repair (default: 533857 install)",
-    )
+        help="Write file bytes to FILE instead of stdout (avoids PowerShell text redirect)")
     _add_global_flash_options(cat, suppress_if_unset=True)
     _add_subcommand_common_args(cat)
     _add_operands_arg(
@@ -1306,132 +1231,110 @@ def main(argv: list[str] | None = None) -> int:
         metavar="[FLASH] PATH",
         help_text=(
             "With --flash: ext2 file path. Otherwise: flash dump path then ext2 file path"
-        ),
-    )
+        ))
 
     ha = sub.add_parser(
         "dump-http-auth",
-        help="Dump httpd auth realms map, factory access codes, and CMDB user passwords",
-    )
+        help="Dump httpd auth realms map, factory access codes, and CMDB user passwords")
     _add_global_flash_options(ha, suppress_if_unset=True)
     _add_nand_args(ha)
     _add_operands_arg(
         ha,
         metavar="[FLASH]",
-        help_text="Flash dump (optional when using --flash PATH)",
-    )
+        help_text="Flash dump (optional when using --flash PATH)")
     ha.add_argument(
         "--redact",
         action="store_true",
-        help="Mask accesscode/Wi‑Fi/CM password fields in output",
-    )
+        help="Mask accesscode/Wi‑Fi/CM password fields in output")
     ha.add_argument(
         "--decode-hashes",
         action="store_true",
-        help="Include hex of base64 CM password blobs (lab only)",
-    )
+        help="Include hex of base64 CM password blobs (lab only)")
     ha.add_argument(
         "--no-tlpart-scan",
         action="store_true",
-        help="Skip scanning assembled tlpart for embedded CM user tables",
-    )
+        help="Skip scanning assembled tlpart for embedded CM user tables")
     ha.add_argument("--json", action="store_true")
 
     cf = sub.add_parser(
         "dump-cmdb-fw",
-        help="Dump CMDB firewall state: pinholes (hostapps), fw params, and rule tables",
-    )
+        help="Dump CMDB firewall state: pinholes (hostapps), fw params, and rule tables")
     _add_global_flash_options(cf, suppress_if_unset=True)
     _add_nand_args(cf)
     _add_operands_arg(
         cf,
         metavar="[FLASH]",
-        help_text="Flash dump (optional when using --flash PATH or --cmdb PATH)",
-    )
+        help_text="Flash dump (optional when using --flash PATH or --cmdb PATH)")
     cf.add_argument(
         "--cmdb",
         type=Path,
         default=None,
         metavar="PATH",
-        help="Read CMDB XML from a local cmlegacy.* file instead of flash ext2",
-    )
+        help="Read CMDB XML from a local cmlegacy.* file instead of flash ext2")
     cf.add_argument(
         "--tables",
         type=str,
         default=None,
-        help="Comma-separated CM table names to parse (default: firewall/pinhole set)",
-    )
+        help="Comma-separated CM table names to parse (default: firewall/pinhole set)")
     cf.add_argument(
         "--catalog",
         action="store_true",
-        help="Include full apps/ports catalog in JSON output",
-    )
+        help="Include full apps/ports catalog in JSON output")
     cf.add_argument(
         "--pinholes-only",
         action="store_true",
-        help="Human output: pinholes section only",
-    )
+        help="Human output: pinholes section only")
     cf.add_argument(
         "--no-tlpart-scan",
         action="store_true",
-        help="Skip scanning assembled tlpart for embedded CMDB firewall chunks",
-    )
+        help="Skip scanning assembled tlpart for embedded CMDB firewall chunks")
     cf.add_argument("--json", action="store_true")
 
     lt = sub.add_parser(
         "cmdb-list-tables",
-        help="List CMDB table names in a local cmlegacy.* XML file",
-    )
+        help="List CMDB table names in a local cmlegacy.* XML file")
     lt.add_argument("--cmdb", type=Path, required=True, metavar="PATH")
     lt.add_argument("--json", action="store_true")
 
     eap = sub.add_parser(
         "dump-eapol-cert",
-        help="Extract lightspeed/device PKCS#12 from assembled tlpart and decrypt to PEM",
-    )
+        help="Extract lightspeed/device PKCS#12 from assembled tlpart and decrypt to PEM")
     _add_global_flash_options(eap, suppress_if_unset=True)
     _add_nand_args(eap)
     _add_operands_arg(
         eap,
         metavar="[FLASH]",
-        help_text="Flash dump (optional when using --flash PATH)",
-    )
+        help_text="Flash dump (optional when using --flash PATH)")
     eap.add_argument(
         "--cert",
         choices=("lightspeed", "device"),
         default="lightspeed",
-        help="Which *_p12= blob to extract (default lightspeed / WAN EAPOL)",
-    )
+        help="Which *_p12= blob to extract (default lightspeed / WAN EAPOL)")
     eap.add_argument(
         "-o",
         "--output",
         type=Path,
         default=None,
         metavar="FILE",
-        help="Write decrypted PEM to FILE (default ./{cert}_{CN}_eapol.pem from cert subject)",
-    )
+        help="Write decrypted PEM to FILE (default ./{cert}_{CN}_eapol.pem from cert subject)")
     eap.add_argument(
         "--p12",
         type=Path,
         default=None,
         metavar="FILE",
-        help="Write raw PKCS#12 to FILE (default ./{cert}_{CN}.p12 from cert subject)",
-    )
+        help="Write raw PKCS#12 to FILE (default ./{cert}_{CN}.p12 from cert subject)")
     eap.add_argument(
         "--no-decrypt",
         action="store_true",
-        help="Only extract and write PKCS#12 from flash (no cryptography / PEM)",
-    )
+        help="Only extract and write PKCS#12 from flash (no cryptography / PEM)")
     eap.add_argument(
         "--stdout-pem",
         action="store_true",
-        help="Write decrypted PEM to stdout instead of -o",
-    )
+        help="Write decrypted PEM to stdout instead of -o")
     eap.add_argument(
         "--redact",
         action="store_true",
-        help="Omit devkey/password from --json (safe for logs)",
-    )
+        help="Omit devkey/password from --json (safe for logs)")
     eap.add_argument("--json", action="store_true")
 
     _gnc_epilog = """
@@ -1459,248 +1362,207 @@ See reference/linux_8021x_lightspeed.md.
             "lightspeed_p12, resolves operator CA, and emits modem-like DHCP options."
         ),
         epilog=_gnc_epilog,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     _add_global_flash_options(gnc, suppress_if_unset=True)
     _add_nand_args(gnc)
     _add_operands_arg(
         gnc,
         metavar="[FLASH]",
-        help_text="Flash dump (optional when using --flash PATH)",
-    )
+        help_text="Flash dump (optional when using --flash PATH)")
     gnc.add_argument(
         "--interface",
         default="wan0",
-        help="Linux WAN interface name (default wan0)",
-    )
+        help="Linux WAN interface name (default wan0)")
     gnc.add_argument(
         "--out-dir",
         type=Path,
         default=Path("lightspeed-network"),
         metavar="DIR",
-        help="Output directory for configs and pki/ subtree (default ./lightspeed-network)",
-    )
+        help="Output directory for configs and pki/ subtree (default ./lightspeed-network)")
     gnc.add_argument(
         "--ca-cert",
         type=Path,
         default=None,
         metavar="FILE",
-        help="Operator CA bundle PEM (default: extracted prod bundle or --eapol-certs-pkgstream)",
-    )
+        help="Operator CA bundle PEM (default: extracted prod bundle or --eapol-certs-pkgstream)")
     gnc.add_argument(
         "--eapol-certs-pkgstream",
         type=Path,
         default=None,
         metavar="FILE",
-        help="att_unified_eapol-certs.pkgstream (extracted if CA PEM not already present)",
-    )
+        help="att_unified_eapol-certs.pkgstream (extracted if CA PEM not already present)")
     gnc.add_argument(
         "--client-pem",
         type=Path,
         default=None,
         metavar="FILE",
-        help="Decrypted client PEM (instead of --flash + dump-eapol-cert)",
-    )
+        help="Decrypted client PEM (instead of --flash + dump-eapol-cert)")
     gnc.add_argument(
         "--identity",
         default=None,
-        help="EAP-TLS identity override (default: cert subject CN / MAC)",
-    )
+        help="EAP-TLS identity override (default: cert subject CN / MAC)")
     gnc.add_argument(
         "--wan-mac",
         default=None,
         metavar="MAC",
-        help="WAN MAC override for [Link] MACAddress (default: cert CN or factory mac=)",
-    )
+        help="WAN MAC override for [Link] MACAddress (default: cert CN or factory mac=)")
     gnc.add_argument(
         "--no-clone-mac",
         action="store_true",
-        help="Do not set MACAddress in the .network file",
-    )
+        help="Do not set MACAddress in the .network file")
     gnc.add_argument(
         "--vendor-class",
         default=None,
         metavar="STRING",
-        help='DHCP option 60 (default: derive "2WHPL M.m.b" from --firmware-version)',
-    )
+        help='DHCP option 60 (default: derive "2WHPL M.m.b" from --firmware-version)')
     gnc.add_argument(
         "--firmware-version",
         default=None,
         metavar="TEXT",
-        help='Dotted build string for vendor class (e.g. "11.14.1.123456" -> 2WHPL 11.14.1)',
-    )
+        help='Dotted build string for vendor class (e.g. "11.14.1.123456" -> 2WHPL 11.14.1)')
     gnc.add_argument(
         "--product-class",
         default="homeportal",
-        help="TR-069 ProductClass for README / option 125 notes (default homeportal)",
-    )
+        help="TR-069 ProductClass for README / option 125 notes (default homeportal)")
     gnc.add_argument(
         "--no-modem-dhcp",
         action="store_true",
-        help="Omit modem-like RequestOptions / max-message-size / vendor class from .network",
-    )
+        help="Omit modem-like RequestOptions / max-message-size / vendor class from .network")
     gnc.add_argument(
         "--dhcp-client-id",
         default=None,
         metavar="ID",
-        help="DHCP ClientIdentifier override (default 00D09E-{factory sn})",
-    )
+        help="DHCP ClientIdentifier override (default 00D09E-{factory sn})")
     gnc.add_argument(
         "--serial",
         default=None,
-        help="Factory serial when using --client-pem without --flash",
-    )
+        help="Factory serial when using --client-pem without --flash")
     gnc.add_argument(
         "--cert",
         choices=("lightspeed", "device"),
         default="lightspeed",
-        help="PKCS#12 name when extracting from flash (default lightspeed / lightspeed_p12)",
-    )
+        help="PKCS#12 name when extracting from flash (default lightspeed / lightspeed_p12)")
     gnc.add_argument(
         "--no-p12",
         action="store_true",
-        help="Do not write pki/lightspeed.p12 (PEM split only)",
-    )
+        help="Do not write pki/lightspeed.p12 (PEM split only)")
     gnc.add_argument(
         "--dry-run",
         action="store_true",
-        help="Plan outputs only; do not write files",
-    )
+        help="Plan outputs only; do not write files")
     gnc.add_argument("--json", action="store_true")
 
     fp = sub.add_parser(
         "factory-params",
-        help="Dump factory manufacturing key=value block from loader MTD (sn, mac, …)",
-    )
+        help="Dump factory manufacturing key=value block from loader MTD (sn, mac, …)")
     _add_global_flash_options(fp, suppress_if_unset=True)
     _add_nand_args(fp)
     _add_operands_arg(
         fp,
         metavar="[FLASH]",
-        help_text="Flash dump (optional when using --flash PATH)",
-    )
+        help_text="Flash dump (optional when using --flash PATH)")
     fp.add_argument(
         "--offset",
         type=lambda x: int(x, 0),
         default=None,
         metavar="OFF",
-        help=f"Hint offset of model= in loader (default auto; PACE ~{0x1FF84:#x})",
-    )
+        help=f"Hint offset of model= in loader (default auto; PACE ~{0x1FF84:#x})")
     fp.add_argument(
         "--redact",
         action="store_true",
-        help="Mask devkey/authcode/wifi secrets in output (safe for logs)",
-    )
+        help="Mask devkey/authcode/wifi secrets in output (safe for logs)")
     fp.add_argument("--json", action="store_true")
 
     pt = sub.add_parser(
         "paramtool",
-        help="Dump board_param / paramtool keys (gw:*) from assembled tlpart (offline RE)",
-    )
+        help="Dump board_param / paramtool keys (gw:*) from assembled tlpart (offline RE)")
     _add_global_flash_options(pt, suppress_if_unset=True)
     _add_nand_args(pt)
     _add_operands_arg(
         pt,
         metavar="[FLASH]",
-        help_text="Flash dump (optional when using --flash PATH)",
-    )
+        help_text="Flash dump (optional when using --flash PATH)")
     pt.add_argument(
         "--get",
         metavar="KEY",
         default=None,
-        help="Get one key (e.g. gw:trust_engcert); default is --show all keys found",
-    )
+        help="Get one key (e.g. gw:trust_engcert); default is --show all keys found")
     pt.add_argument(
         "-o",
         "--output",
         type=Path,
         default=None,
         metavar="FILE",
-        help="With --get: write value to FILE (mirrors paramtool -get NAME -out FILE)",
-    )
+        help="With --get: write value to FILE (mirrors paramtool -get NAME -out FILE)")
     pt.add_argument(
         "--no-p12",
         action="store_true",
-        help="Omit *_p12 base64 blobs from listing (gw:* keys only)",
-    )
+        help="Omit *_p12 base64 blobs from listing (gw:* keys only)")
     pt.add_argument(
         "--redact",
         action="store_true",
-        help="Mask *_p12 and other sensitive values",
-    )
+        help="Mask *_p12 and other sensitive values")
     pt.add_argument("--json", action="store_true")
 
     bi = sub.add_parser(
         "board-info",
-        help="Dump factory identity, paramtool keys, ext2 version files, CMDB upgrade state",
-    )
+        help="Dump factory identity, paramtool keys, ext2 version files, CMDB upgrade state")
     _add_global_flash_options(bi, suppress_if_unset=True)
     _add_nand_args(bi)
     _add_operands_arg(
         bi,
         metavar="[FLASH]",
-        help_text="Flash dump (optional when using --flash PATH)",
-    )
+        help_text="Flash dump (optional when using --flash PATH)")
     bi.add_argument(
         "--redact",
         action="store_true",
-        help="Mask factory secrets in output (safe for logs)",
-    )
+        help="Mask factory secrets in output (safe for logs)")
     bi.add_argument(
         "--no-tlpart-scan",
         action="store_true",
-        help="Skip embedded mgmt_upgstate scan in assembled tlpart",
-    )
+        help="Skip embedded mgmt_upgstate scan in assembled tlpart")
     bi.add_argument("--json", action="store_true")
 
     bci = sub.add_parser(
         "build-carrier-index",
-        help="Precompute rootimage/ui squash SHA-256 refs for all 00D09E install pkgstreams",
-    )
+        help="Precompute rootimage/ui squash SHA-256 refs for all 00D09E install pkgstreams")
     bci.add_argument(
         "firmware_collection",
         type=Path,
         metavar="DIR",
-        help="Firmware device tree root (e.g. …/firmware/00D09E)",
-    )
+        help="Firmware device tree root (e.g. …/firmware/00D09E)")
     bci.add_argument(
         "--out",
         type=Path,
         default=_DEFAULT_CARRIER_INDEX,
         metavar="PATH",
-        help=f"Output JSON cache path (default {_DEFAULT_CARRIER_INDEX})",
-    )
+        help=f"Output JSON cache path (default {_DEFAULT_CARRIER_INDEX})")
 
     pte = sub.add_parser(
         "patch-trust-engcert",
-        help="Patch gw:trust_engcert in board_param env copies (immutable: writes new flash file)",
-    )
+        help="Patch gw:trust_engcert in board_param env copies (immutable: writes new flash file)")
     _add_global_flash_options(pte, suppress_if_unset=True)
     _add_operands_arg(
         pte,
         metavar="[FLASH]",
-        help_text="Source flash dump (optional when using --flash PATH)",
-    )
+        help_text="Source flash dump (optional when using --flash PATH)")
     pte.add_argument(
         "--value",
         choices=("true", "false"),
         default="true",
-        help="trust_engcert value (default: true)",
-    )
+        help="trust_engcert value (default: true)")
     pte.add_argument(
         "--out",
         type=Path,
         required=True,
         metavar="FILE",
-        help="Output flash dump path (original is never modified)",
-    )
+        help="Output flash dump path (original is never modified)")
     pte.add_argument(
         "--manifest",
         type=Path,
         default=None,
         metavar="JSON",
-        help="Patch manifest JSON path (default: OUT.patch.json)",
-    )
+        help="Patch manifest JSON path (default: OUT.patch.json)")
     pte.add_argument("--json", action="store_true")
 
     args = ap.parse_args(argv)
@@ -1714,8 +1576,7 @@ See reference/linux_8021x_lightspeed.md.
                     "carrier_count": doc.get("carrier_count"),
                     "ref_rows": len(doc.get("refs") or []),
                 },
-                indent=2,
-            )
+                indent=2)
         )
         return 0
 
@@ -1783,8 +1644,7 @@ See reference/linux_8021x_lightspeed.md.
             flash_path,
             value=args.value,
             out_path=args.out,
-            manifest_path=manifest,
-        )
+            manifest_path=manifest)
         if args.json:
             print(json.dumps(doc, indent=2))
         else:

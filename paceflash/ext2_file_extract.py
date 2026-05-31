@@ -20,14 +20,12 @@ DEFAULT_SQUASH_IMAGE_PATHS: tuple[str, ...] = (
     "rootimage.img",
     "sys1/ui.img",
     "sys2/ui.img",
-    "ui.img",
-)
+    "ui.img")
 
 # Install/recovery kernel on opentla4 (U-Boot ``ext2load opentl 0:5 … /sys1/uImage``).
 DEFAULT_UIMAGE_PATHS: tuple[str, ...] = (
     "sys1/uImage",
-    "sys2/uImage",
-)
+    "sys2/uImage")
 
 _EMBEDDED_ROW_BASE: dict[str, Any] = {
     "content_kind": "squashfs",
@@ -47,8 +45,7 @@ def extract_ext2_file(
     path: str,
     *,
     sb_off: int | None = None,
-    access: Ext2VolumeAccess | None = None,
-) -> tuple[bytes | None, dict[str, Any]]:
+    access: Ext2VolumeAccess | None = None) -> tuple[bytes | None, dict[str, Any]]:
     """
     Read one embedded ``.img`` path from the ext2 **container** (file bytes are usually SquashFS).
 
@@ -91,25 +88,14 @@ def extract_ext2_file(
 
     # Lab NAND dumps: Dissect dentry miss; fall back to inode-faithful PACE read (not CMDB recovery).
     try:
-        from boardfs.ext2_path import (
-            default_extent_merge_for_path,
-            default_shadow_promote_for_path,
-            read_ext2_regular_file,
-        )
-        from paceflash.uimage_oracle import resolve_uimage_oracle
+        from boardfs.ext2_path import read_ext2_regular_file
 
         rel = path.lstrip("/")
-        use_extent_merge = default_extent_merge_for_path(rel)
-        oracle = resolve_uimage_oracle() if use_extent_merge else None
         body = read_ext2_regular_file(
             slice_data,
             rel,
             sb_off=sb,
             access=access,
-            cmdb_recover=False,
-            extent_merge=use_extent_merge,
-            shadow_promote=default_shadow_promote_for_path(rel),
-            oracle_body=oracle,
         )
     except Exception as e:
         meta["error"] = f"{type(e).__name__}: {e}"
@@ -133,8 +119,7 @@ def probe_embedded_squash_images(
     slice_data: bytes,
     paths: tuple[str, ...] = DEFAULT_SQUASH_IMAGE_PATHS,
     *,
-    sb_off: int | None = None,
-) -> list[dict[str, Any]]:
+    sb_off: int | None = None) -> list[dict[str, Any]]:
     """Probe known ``.img`` paths (SquashFS payloads inside ext2, not ext2 volumes themselves)."""
     sb = sb_off if sb_off is not None else resolve_mountable_ext2_superblock_offset(slice_data)
     rows: list[dict[str, Any]] = []
@@ -156,8 +141,7 @@ def ext2_file_sources_from_block_dev(
     dev: BlockSlice,
     paths: tuple[str, ...] = DEFAULT_SQUASH_IMAGE_PATHS,
     *,
-    access: Ext2VolumeAccess | None = None,
-) -> tuple[list[tuple[str, bytes]], list[dict[str, Any]], int | None]:
+    access: Ext2VolumeAccess | None = None) -> tuple[list[tuple[str, bytes]], list[dict[str, Any]], int | None]:
     """
     Return ``(correlation_sources, probe_rows, ext2_sb_off)``.
 
@@ -179,8 +163,7 @@ def ext2_file_sources_from_block_dev(
 def try_dissect_ext2_file_root(
     dev: BlockSlice,
     *,
-    paths: tuple[str, ...] = ("sys1/rootimage.img", "sys2/rootimage.img", "rootimage.img"),
-) -> dict[str, Any] | None:
+    paths: tuple[str, ...] = ("sys1/rootimage.img", "sys2/rootimage.img", "rootimage.img")) -> dict[str, Any] | None:
     """First embedded ``.img`` whose bytes dissect as SquashFS ``/`` (for inventory squash block)."""
     from paceflash.squashfs_dissect import list_squashfs_root_entries_with_meta
 

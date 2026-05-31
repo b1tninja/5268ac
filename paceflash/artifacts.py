@@ -10,6 +10,7 @@ from boardfs.ext2_dissect import resolve_mountable_ext2_superblock_offset
 from boardfs.ext2_path import list_ext2_directory, read_ext2_regular_file
 from corpus.artifacts import CorpusArtifact
 from paceflash.ext2_file_extract import DEFAULT_SQUASH_IMAGE_PATHS, DEFAULT_UIMAGE_PATHS
+from paceflash.squashfs_carve import carve_dissectable_squash_blob
 from paceflash.flash_session import _opentla4_volume_access, open_flash_registry
 from paceflash.mtd_partition_probes import run_mtd_partition_probes
 from paceflash.opentla4_extract import extract_opentla4_filesystem, opentla4_extract_to_jsonable
@@ -36,15 +37,13 @@ def _artifact(
     kind: str,
     logical_path: str,
     data: bytes,
-    **metadata: object,
-) -> CorpusArtifact:
+    **metadata: object) -> CorpusArtifact:
     return CorpusArtifact(
         source_key=_source_key(prefix, kind, logical_path),
         kind=kind,
         logical_path=logical_path,
         data=data,
-        metadata=dict(metadata),
-    )
+        metadata=dict(metadata))
 
 
 def _corpus_ext2_static_paths() -> tuple[str, ...]:
@@ -59,8 +58,7 @@ def _corpus_ext2_static_paths() -> tuple[str, ...]:
                 *DEFAULT_SQUASH_IMAGE_PATHS,
                 *DEFAULT_UIMAGE_PATHS,
                 *version_paths,
-                *_CMDB_EXT2_PATHS,
-            )
+                *_CMDB_EXT2_PATHS)
         )
     )
 
@@ -71,12 +69,11 @@ def corpus_extracted_files_from_ext2(
     sb_off: int | None,
     access: object | None = None,
     max_file_bytes: int = 32 * 1024 * 1024,
-    walk_roots: tuple[str, ...] = _CORPUS_EXT2_WALK_ROOTS,
-) -> dict[str, bytes]:
+    walk_roots: tuple[str, ...] = _CORPUS_EXT2_WALK_ROOTS) -> dict[str, bytes]:
     """
     Read indexable files from an assembled opentla4 ext2 slice.
 
-    Uses ``cmdb_recover=True`` so CMDB / sys1 paths resolve on lab dumps where
+    Uses kernel-faithful ext2 reads so CMDB / sys1 paths resolve on lab dumps where
     directory entries are opaque to plain dissect walks.
     """
     sb = sb_off if sb_off is not None else resolve_mountable_ext2_superblock_offset(slice_bytes)
@@ -94,7 +91,6 @@ def corpus_extracted_files_from_ext2(
                 path,
                 sb_off=sb,
                 access=access,  # type: ignore[arg-type]
-                cmdb_recover=True,
             )
         except (FileNotFoundError, OSError, ValueError):
             return
@@ -113,7 +109,6 @@ def corpus_extracted_files_from_ext2(
                 rel,
                 sb_off=sb,
                 access=access,  # type: ignore[arg-type]
-                cmdb_recover=True,
                 cap=256,
             )
         except (OSError, ValueError):
@@ -131,21 +126,10 @@ def corpus_extracted_files_from_ext2(
 
 
 def _squashfs_carve_bytes(data: bytes, off: int) -> bytes | None:
-    """Return a strict SquashFS blob starting at *off*, or ``None`` if not valid."""
-    if off < 0 or off + 4 > len(data) or data[off : off + 4] not in (b"hsqs", b"sqsh"):
-        return None
-    from lib2spy.native_pkgstream import squashfs_span_at
+    """Return carved bytes at *off* without Dissect verification (legacy helper)."""
+    from paceflash.squashfs_carve import squashfs_carve_bytes
 
-    span = squashfs_span_at(data, off)
-    if span is None:
-        # Some vendor images have a SquashFS magic but an unexpected or corrupted
-        # superblock field layout (bytes_used check fails). If the file itself
-        # begins with SquashFS magic, treat the entire ext2 file as the image.
-        return data if off == 0 else None
-    start, slen = span
-    end = min(start + slen, len(data))
-    carved = data[start:end]
-    return carved if len(carved) >= 4 and carved[:4] in (b"hsqs", b"sqsh") else None
+    return squashfs_carve_bytes(data, off)
 
 
 def _uimage_payload(data: bytes) -> bool:
@@ -207,8 +191,7 @@ def iter_flash_corpus_artifacts(
         nand_translate=nand_translate,
         nand_translate_mode=nand_translate_mode,  # type: ignore[arg-type]
         bbm_chain_aware=bbm_chain_aware,
-        tl_slice=tl_slice,
-    ) as reg:
+        tl_slice=tl_slice) as reg:
         mtd_rows = [
             {
                 "index": p.index,
@@ -233,8 +216,7 @@ def iter_flash_corpus_artifacts(
             "flash_metadata",
             "flash_metadata.json",
             json.dumps(meta, indent=2).encode("utf-8"),
-            **meta,
-        )
+            **meta)
 
         if include_mtd:
             probes = run_mtd_partition_probes(reg.flash)
@@ -244,8 +226,7 @@ def iter_flash_corpus_artifacts(
                 "mtd_probe_metadata.json",
                 json.dumps(probes, indent=2).encode("utf-8"),
                 probe_loader=True,
-                probe_mtdoops=True,
-            )
+                probe_mtdoops=True)
             tlpart_bytes: bytes | None = None
             for name in ("loader", "mtdoops", "tlpart"):
                 try:
@@ -262,8 +243,7 @@ def iter_flash_corpus_artifacts(
                     blob,
                     partition=name,
                     offset=part.offset,
-                    size=part.size,
-                )
+                    size=part.size)
             # NOTE: board_param is indexed as a first-class typed record in corpus (see corpus.index_db),
             # not as a synthetic file path (e.g. board_param/keys.txt) that suggests it existed on-device.
 
@@ -274,8 +254,7 @@ def iter_flash_corpus_artifacts(
             reg,
             slice_name=tl_slice,
             probe_embedded_squash=include_squashfs,
-            lazy_assembly=lazy_assembly,
-        )
+            lazy_assembly=lazy_assembly)
         extract_meta = opentla4_extract_to_jsonable(result)
         yield _artifact(
             prefix,
@@ -284,8 +263,7 @@ def iter_flash_corpus_artifacts(
             json.dumps(extract_meta, indent=2).encode("utf-8"),
             slice=tl_slice,
             read_model=result.read_model,
-            ext2_superblock_offset=result.ext2_sb_offset,
-        )
+            ext2_superblock_offset=result.ext2_sb_offset)
         ext2_source_key = _source_key(prefix, "tl_ext2", f"{tl_slice}/{tl_slice}.ext2")
         if result.slice_bytes:
             yield _artifact(
@@ -295,13 +273,11 @@ def iter_flash_corpus_artifacts(
                 result.slice_bytes,
                 slice=tl_slice,
                 read_model=result.read_model,
-                ext2_superblock_offset=result.ext2_sb_offset,
-            )
+                ext2_superblock_offset=result.ext2_sb_offset)
         corpus_files = corpus_extracted_files_from_ext2(
             result.slice_bytes,
             sb_off=result.ext2_sb_offset,
-            access=result.access,
-        )
+            access=result.access)
         merged_files = {**result.extracted_files, **corpus_files}
         for rel, data in sorted(merged_files.items()):
             ext2_logical_path = f"{tl_slice}/{rel}"
@@ -315,8 +291,7 @@ def iter_flash_corpus_artifacts(
                 ext2_path=rel,
                 parent_source_key=ext2_source_key,
                 parent_logical_path=f"{tl_slice}/{tl_slice}.ext2",
-                relationship="ext2_contains_file",
-            )
+                relationship="ext2_contains_file")
             if include_uimage and _uimage_payload(data):
                 yield _artifact(
                     prefix,
@@ -327,8 +302,7 @@ def iter_flash_corpus_artifacts(
                     ext2_path=rel,
                     parent_source_key=ext2_file_source_key,
                     parent_logical_path=ext2_logical_path,
-                    relationship="ext2_file_is_uimage",
-                )
+                    relationship="ext2_file_is_uimage")
                 conv = uimage_to_vmlinux_elf(data)
                 if conv.ok and conv.elf_bytes:
                     yield _artifact(
@@ -344,32 +318,41 @@ def iter_flash_corpus_artifacts(
                         ih_load=conv.peel.header.ih_load,
                         ih_ep=conv.peel.header.ih_ep,
                         kernel_inner_len=len(conv.peel.kernel_inner),
-                        member_decompressed=conv.peel.member_decompressed,
-                    )
+                        member_decompressed=conv.peel.member_decompressed)
             if include_squashfs:
-                offsets = _squashfs_offsets(data)
+                carved = carve_dissectable_squash_blob(
+                    data,
+                    prefer_offsets=_squashfs_offsets(data),
+                )
+                squash_meta: dict[str, object] = {}
+                squash_off = 0
+                squash_bytes: bytes | None = None
+                if carved is not None:
+                    squash_off, squash_bytes, squash_meta = carved
             else:
-                offsets = []
-            for off in offsets:
-                carved = _squashfs_carve_bytes(data, off)
-                if carved is None:
-                    continue
+                squash_bytes = None
+                squash_meta = {}
+            if squash_bytes is not None:
                 logical = (
                     f"{tl_slice}/squashfs/{rel}"
-                    if off == 0
-                    else f"{tl_slice}/squashfs/{rel}@0x{off:x}"
+                    if squash_off == 0
+                    else f"{tl_slice}/squashfs/{rel}@0x{squash_off:x}"
                 )
+                squash_extra = {
+                    k: v for k, v in squash_meta.items() if k not in {"ext2_path"}
+                }
                 yield _artifact(
                     prefix,
                     "squashfs",
                     logical,
-                    carved,
+                    squash_bytes,
                     slice=tl_slice,
                     ext2_path=rel,
-                    squashfs_offset=off,
+                    squashfs_offset=squash_off,
                     parent_source_key=ext2_file_source_key,
                     parent_logical_path=ext2_logical_path,
                     relationship="ext2_file_contains_squashfs",
+                    **squash_extra,
                 )
 
 

@@ -1,0 +1,33 @@
+x-corpus-mcp: &corpus-mcp
+  image: 5268ac-corpus-mcp
+  build:
+    context: ../..
+    dockerfile: docker/corpus-mcp/Dockerfile
+  working_dir: /work
+  ports:
+    - "${CORPUS_MCP_PORT:-8100}:8100"
+  environment:
+    CORPUS_MCP_HOST: "0.0.0.0"
+    CORPUS_MCP_PORT: "8100"
+    CORPUS_MCP_TRANSPORT: streamable-http
+    CORPUS_DB: ${CORPUS_DB:-/work/work_corpus/corpus/index.sqlite}
+    CORPUS_REPO_ROOT: /work
+    CORPUS_MCP_READONLY: "1"
+  volumes:
+    - ../..:/work
+    - ../../work_corpus:/work/work_corpus
+  restart: unless-stopped
+
+services:
+  corpus-mcp:
+    <<: *corpus-mcp
+    command: ["serve"]
+
+  # Local stdio smoke test inside the container (no HTTP port needed).
+  corpus-mcp-shell:
+    <<: *corpus-mcp
+    profiles: ["shell"]
+    ports: []
+    command: ["shell"]
+    stdin_open: true
+    tty: true

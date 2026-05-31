@@ -19,7 +19,7 @@ Python orchestration layer for **offline Pace 5268AC** flash work: turn **`mtdpa
 | **C** | [`ubi_cmdline.py`](ubi_cmdline.py), [`ubi_scan.py`](ubi_scan.py) | **`ubi.mtd=`** specs, raw **UBI VID** header hits |
 | **D** | [`squashfs_probe.py`](squashfs_probe.py) | **`hsqs`** magic peek on a block slice |
 
-**Ext2:** [`ext2_dissect.py`](ext2_dissect.py) (superblock, mount **`/`**, GD sanitize) and [`ext2_path.py`](ext2_path.py) (`list_ext2_directory`, `read_ext2_regular_file`). PACE CMDB recovery when inode trees are stale: [`cmdb_extent_walker.py`](cmdb_extent_walker.py).
+**Ext2:** [`ext2_dissect.py`](ext2_dissect.py) (superblock, mount **`/`**, GD sanitize) and [`ext2_path.py`](ext2_path.py) (`list_ext2_directory`, `read_ext2_regular_file`). PACE CMDB directory skew uses lag/`+2` resolution in [`ext2_dissect.py`](ext2_dissect.py).
 
 ---
 
@@ -121,7 +121,6 @@ Public exports are listed in [`__init__.py`](__init__.py) (`FsRegistry`, `assemb
 | [`pipeline.py`](pipeline.py) | **`fs_registry_from_nand_pipeline`** |
 | [`ext2_dissect.py`](ext2_dissect.py) | Superblock resolve, list **`/`**, Dissect-oriented sanitize |
 | [`ext2_path.py`](ext2_path.py) | Directory listing and file read by path |
-| [`cmdb_extent_walker.py`](cmdb_extent_walker.py) | CMDB XML recovery on bad inode extents |
 | [`ext2_volume_io.py`](ext2_volume_io.py) | Block-level ext2 I/O with optional NTL context |
 | [`cli.py`](cli.py) | **`virt-map`**, **`page-table`** |
 | [`cli_flash.py`](cli_flash.py) | Shared flash-open helpers for CLI |

@@ -5,10 +5,25 @@ x-corpus-runtime: &corpus-runtime
     dockerfile: docker/corpus-runtime/Dockerfile
     target: runtime
   working_dir: /work
+  environment:
+    CORPUS_SQLITE_JOURNAL: ${CORPUS_SQLITE_JOURNAL:-wal}
+    CORPUS_SQLITE_MMAP: ${CORPUS_SQLITE_MMAP:-0}
   volumes:
     - ../..:/work
     - ../../gateway.c01.sbcglobal.net:/work/gateway.c01.sbcglobal.net
     - ../../work_corpus:/work/work_corpus
+
+# Syft mount mode (--sbom-source auto|mount) needs loop mounts inside the container.
+# cap_add alone is not enough on Docker Desktop (Windows); use privileged: true.
+# If mounts still fail (NTFS bind mounts), set SBOM_SOURCE=materialize (fresh-index default).
+x-index-privileged: &index-privileged
+  privileged: true
+  cap_add:
+    - SYS_ADMIN
+  devices:
+    - /dev/fuse
+  security_opt:
+    - apparmor:unconfined
 
 services:
   corpus:
@@ -25,8 +40,9 @@ services:
       - /work/gateway.c01.sbcglobal.net
       - --jsonl
 
+  # Full gateway mirror: all pkgstreams under gateway.c01.sbcglobal.net
   index-pkgstreams:
-    <<: *corpus-runtime
+    <<: [*corpus-runtime, *index-privileged]
     command:
       - --build-index
       - --max-file-mb
@@ -36,9 +52,7 @@ services:
       - --symtab
       - --dwarf
       - --jobs
-      - "8"
-      - --db
-      - /work/work_corpus/corpus_index.sqlite
+      - ${CORPUS_JOBS:-8}
       - --pkgstream-root
       - /work/gateway.c01.sbcglobal.net
       - --pkgstream-work
@@ -48,5 +62,156 @@ services:
       - --sbom-dir
       - /work/work_corpus/sbom
       - --sbom-source
-      - auto
+      - ${SBOM_SOURCE:-auto}
       - --sbom
+
+  # Same as index-pkgstreams with inline secret rules (+ optional gitleaks when SBOM materializes).
+  index-pkgstreams-secrets:
+    <<: [*corpus-runtime, *index-privileged]
+    command:
+      - --build-index
+      - --max-file-mb
+      - "0"
+      - --max-strings-per-file
+      - "2000"
+      - --symtab
+      - --dwarf
+      - --jobs
+      - ${CORPUS_JOBS:-8}
+      - --pkgstream-root
+      - /work/gateway.c01.sbcglobal.net
+      - --pkgstream-work
+      - /work/work_corpus/pkgstream_corpus_by_version
+      - --pkgstream-report-json
+      - /work/work_corpus/gateway_pkgstream_index_report.json
+      - --sbom-dir
+      - /work/work_corpus/sbom
+      - --sbom-source
+      - ${SBOM_SOURCE:-auto}
+      - --sbom
+      - --secrets
+      - --secrets-gitleaks
+      - --secrets-dir
+      - /work/work_corpus/secrets
+
+  index-flash-secrets:
+    <<: *corpus-runtime
+    command:
+      - --build-index
+      - --max-file-mb
+      - "0"
+      - --flash
+      - /work/PACE 5268AC S34ML01G1@TSOP48.BIN.BAK
+      - --secrets
+      - --secrets-dir
+      - /work/work_corpus/secrets
+
+  list-secrets:
+    <<: *corpus-runtime
+    command:
+      - --list-secrets
+      - --secrets-dir
+      - /work/work_corpus/secrets
+      - --jsonl
+
+  # One release directory. Set PKGSTREAM_ROOT to the container path (/work/...).
+  index-release:
+    <<: [*corpus-runtime, *index-privileged]
+    environment:
+      PKGSTREAM_ROOT: ${PKGSTREAM_ROOT:-}
+      INDEX_REPORT_JSON: ${INDEX_REPORT_JSON:-/work/work_corpus/reports/release_index_report.json}
+      SBOM_SOURCE: ${SBOM_SOURCE:-auto}
+      CORPUS_JOBS: ${CORPUS_JOBS:-8}
+    command:
+      - --build-index
+      - --max-file-mb
+      - "0"
+      - --max-strings-per-file
+      - "2000"
+      - --symtab
+      - --dwarf
+      - --jobs
+      - ${CORPUS_JOBS:-8}
+      - --pkgstream-root
+      - ${PKGSTREAM_ROOT}
+      - --pkgstream-work
+      - /work/work_corpus/pkgstream_corpus_by_version
+      - --pkgstream-report-json
+      - ${INDEX_REPORT_JSON:-/work/work_corpus/reports/release_index_report.json}
+      - --sbom-dir
+      - /work/work_corpus/sbom
+      - --sbom-source
+      - ${SBOM_SOURCE:-auto}
+      - --sbom
+
+  grype-sboms:
+    <<: *corpus-runtime
+    command:
+      - --grype
+      - --grype-all
+      - --grype-output
+      - json
+      - --grype-skip-existing
+      - --sbom-dir
+      - /work/work_corpus/sbom
+
+  grype-collection:
+    <<: *corpus-runtime
+    environment:
+      CORPUS_COLLECTION: ${CORPUS_COLLECTION:-}
+    command:
+      - --grype
+      - --grype-all
+      - --grype-output
+      - json
+      - --grype-skip-existing
+      - --sbom-dir
+      - /work/work_corpus/sbom
+      - --collection
+      - ${CORPUS_COLLECTION}
+
+  list-sboms:
+    <<: *corpus-runtime
+    command:
+      - --list-sboms
+      - --sbom-dir
+      - /work/work_corpus/sbom
+      - --jsonl
+
+  list-sboms-collection:
+    <<: *corpus-runtime
+    environment:
+      CORPUS_COLLECTION: ${CORPUS_COLLECTION:-}
+    command:
+      - --list-sboms
+      - --sbom-dir
+      - /work/work_corpus/sbom
+      - --collection
+      - ${CORPUS_COLLECTION}
+      - --jsonl
+
+  # Default reindex: preflight → nands/ → gateway pkgstreams with 00D09E in path (Z→A) → Grype.
+  x-reindex: &reindex
+    <<: [*corpus-runtime, *index-privileged]
+    environment:
+      CORPUS_DB: ${CORPUS_DB:-/work/work_corpus/corpus/index.sqlite}
+      CORPUS_JOBS: ${CORPUS_JOBS:-4}
+      CORPUS_SQLITE_JOURNAL: ${CORPUS_SQLITE_JOURNAL:-wal}
+      CORPUS_SQLITE_MMAP: ${CORPUS_SQLITE_MMAP:-0}
+      CORPUS_INDEX_BATCH_FILES: ${CORPUS_INDEX_BATCH_FILES:-100}
+      SBOM_SOURCE: ${SBOM_SOURCE:-materialize}
+      PKGSTREAM_PATH_FILTER: ${PKGSTREAM_PATH_FILTER:-00D09E}
+      FRESH_INDEX: ${FRESH_INDEX:-1}
+      RESUME: ${RESUME:-0}
+      SKIP_NANDS: ${SKIP_NANDS:-0}
+      SKIP_GRYPE: ${SKIP_GRYPE:-0}
+      PKGSTREAM_REPORT_JSON: ${PKGSTREAM_REPORT_JSON:-/work/work_corpus/gateway_fresh_index_report.json}
+    command:
+      - bash
+      - /work/docker/corpus-runtime/fresh_index_gateway_z2a.sh
+
+  reindex:
+    <<: *reindex
+
+  fresh-index-gateway-z2a:
+    <<: *reindex

@@ -333,16 +333,18 @@ def _ext2_direct_logical_block(raw_blk: int, *, last_block: int) -> int:
 # Ghidra ``ext2_block_to_path`` @ ``0x8013c9f0``: ``file_blk < 0xc`` → direct ``i_block[file_blk]``.
 _EXT2_NDIR_BLOCKS_KERNEL = 12
 _EXT2_FEATURE_INCOMPAT_HTREE = 0x2000000
-
-# Exported for :mod:`boardfs.cmdb_extent_walker` (physical recovery, not kernel ext2).
-_CMDB_HEADER_MARKERS = (b"<?xml", b"<?xll", b"<CM VERS")
-_CMDB_XML_FOOTER = b"</ROOT></CM>"
 _PACE_INDIRECT_HDR_MAGIC = b"\xff\xac"
-_PACE_CMDB_HEADER_SCAN_BACK = 128
 
 
-def _ext2_block_has_cmdb_header(chunk: bytes) -> bool:
-    return any(m in chunk for m in _CMDB_HEADER_MARKERS)
+def _pace_pointer_lag_blocks(raw_blk: int, i_blocks: int, i_mode: int) -> int:
+    """PACE ``0x01``-tagged ``i_block[]`` lag for directory / regular-file slots."""
+    if raw_blk == 0 or ((raw_blk >> 16) & 0xFF) != 0x01:
+        return 0
+    if (i_mode & 0xF000) == 0x4000:
+        return -int(i_blocks)
+    if (i_mode & 0xF000) == 0x8000:
+        return int(i_blocks) - 2 * _EXT2_NDIR_BLOCKS_KERNEL
+    return 0
 
 
 def _ext2_addr_per_block_bits(blksz: int) -> int:
@@ -512,8 +514,7 @@ def _ext2_map_file_block(
     """
     Map file-relative block index to a filesystem block (kernel ``ext2_get_block`` read path).
 
-    ``base_shift`` / ``log_block_size`` are ignored (PACE recovery uses
-    :mod:`boardfs.cmdb_extent_walker`).
+    ``base_shift`` / ``log_block_size`` are ignored (reserved).
     """
     del base_shift, log_block_size
     if file_blk < 0 or blksz <= 0 or last_block <= 0:
@@ -586,54 +587,21 @@ def _ext2_read_file_bytes(
     i_blocks: int = 0,
     i_mode: int = 0,
     access: Ext2VolumeAccess | None = None,
-    cmdb_recover: bool = False,
-    extent_merge: bool = False,
     rel_path: str = "",
     live_inum: int = 0,
-    oracle_body: bytes | None = None,
     shadow_promote: bool = False,
 ) -> bytes:
     """
     Read a regular file via kernel ``ext2_get_block`` mapping.
 
     Stops at ``i_size`` like ``generic_file_read``. Unmapped blocks are zero-filled (hole).
-    Default path is :func:`_ext2_read_file_bytes_kernel_exact` (stock 12-direct + indirect,
-    no sanitize/repair/13-direct PACE walker). ``cmdb_recover=True`` uses CMDB extent
-    recovery; ``shadow_promote=True`` swaps stale live-map blocks from deleted orphan
-    shadow inodes; ``extent_merge=True`` repairs stale install-image inode maps (pkgstream
-    chunk oracle when ``oracle_body`` is set).
+    Default on PACE opentla4 captures (``s_inode_size == 0``): shadow-inode promotion
+    when orphan copies exist, then stale-document extent recovery for mid-file CMDB XML.
     """
-    if cmdb_recover:
-        from boardfs.cmdb_extent_walker import recover_cmdb_file_bytes
+    if (shadow_promote or _ext2_volume_uses_pace_inode_layout(buf, sb_off)) and live_inum > 0:
+        from boardfs.ext2_shadow_promote import read_shadow_promoted_file_bytes
 
-        return recover_cmdb_file_bytes(
-            buf,
-            sb_off,
-            i_block,
-            size,
-            i_blocks=i_blocks,
-            i_mode=i_mode,
-            access=access,
-        )
-    if extent_merge and live_inum > 0:
-        from boardfs.ext2_extent_merge import read_extent_merged_file_bytes
-
-        return read_extent_merged_file_bytes(
-            buf,
-            sb_off,
-            live_inum,
-            i_block,
-            size,
-            rel_path=rel_path,
-            i_blocks=i_blocks,
-            i_mode=i_mode,
-            access=access,
-            oracle_body=oracle_body,
-        )
-    if shadow_promote and live_inum > 0:
-        from boardfs.ext2_extent_merge import read_shadow_promoted_file_bytes
-
-        return read_shadow_promoted_file_bytes(
+        data = read_shadow_promoted_file_bytes(
             buf,
             sb_off,
             live_inum,
@@ -641,9 +609,24 @@ def _ext2_read_file_bytes(
             size,
             access=access,
         )
-    return _ext2_read_file_bytes_kernel_exact(
-        buf, sb_off, i_block, size, access=access
-    )
+    else:
+        data = _ext2_read_file_bytes_kernel_exact(
+            buf, sb_off, i_block, size, access=access
+        )
+
+    if _ext2_volume_uses_pace_inode_layout(buf, sb_off):
+        from boardfs.ext2_stale_extent import recover_stale_document_extent
+
+        data = recover_stale_document_extent(
+            buf,
+            sb_off,
+            i_block,
+            data,
+            size=size,
+            i_mode=i_mode,
+            access=access,
+        )
+    return data
 
 
 def ext2_file_map_report(
@@ -660,8 +643,7 @@ def ext2_file_map_report(
     """
     Human-readable block map (stock kernel ``ext2_get_block`` layout).
 
-    Use from ``paceflash`` ``ext2map`` or tests. For CMDB physical recovery use
-    ``paceflash cat --cmdb-recover`` / :mod:`boardfs.cmdb_extent_walker`.
+    Use from ``paceflash`` ``ext2map`` or tests.
     """
     lb = _ext2_last_block(buf, sb_off)
     blksz = _ext2_block_size(buf, sb_off)
@@ -739,27 +721,40 @@ def _ext2_dir_data_block_for_inode(
     inodes_count: int,
     i_blocks: int = 0,
     i_mode: int = 0,
-    cmdb_recover: bool = False,
 ) -> int:
     """
     Resolve the filesystem block that holds a directory's ``.`` dentry.
 
     Starts from ``decode(i_block[0])``; if that block has no ``.`` → ``dir_inum``,
-    applies lag / ``+2`` adjustment (same rules as :func:`recover_cmdb_dir_data_block`).
+    applies PACE lag / ``+2`` adjustment when tagged pointers skew the data block.
     """
-    del cmdb_recover
-    from boardfs.cmdb_extent_walker import recover_cmdb_dir_data_block
+    blk = _ext2_repair_block_ptr(raw_blk, last_block)
+    if blk <= 0 or blksz <= 0:
+        return 0
+    cap = _ext2_dentry_inodes_cap(inodes_count, hint_inum=dir_inum)
 
-    return recover_cmdb_dir_data_block(
-        buf,
-        raw_blk,
-        dir_inum=dir_inum,
-        last_block=last_block,
-        blksz=blksz,
-        inodes_count=inodes_count,
-        i_blocks=i_blocks,
-        i_mode=i_mode,
-    )
+    def _has_dot(block_num: int) -> bool:
+        if block_num <= 0 or block_num > last_block:
+            return False
+        off = block_num * blksz
+        if off + blksz > len(buf):
+            return False
+        return _ext2_dir_block_has_dot_entry(
+            buf[off : off + blksz], dir_inum, inodes_count=cap
+        )
+
+    lag = _pace_pointer_lag_blocks(raw_blk, i_blocks, i_mode)
+    if lag != 0:
+        adj = blk - lag
+        if adj > 0 and _has_dot(adj):
+            return adj
+    if dir_inum > 0 and _has_dot(blk):
+        return blk
+    if dir_inum > 0 and ((raw_blk >> 16) & 0xFF) == 0x01:
+        ahead = blk + 2
+        if _has_dot(ahead):
+            return ahead
+    return blk if blk > 0 else 0
 
 
 def _ext2_dir_blocks_bytes(
@@ -774,7 +769,6 @@ def _ext2_dir_blocks_bytes(
     i_blocks: int = 0,
     i_mode: int = 0,
     access: Ext2VolumeAccess | None = None,
-    cmdb_recover: bool = False,
 ) -> bytes:
     """Read directory via kernel direct ``i_block[0..11]`` (``ext2_get_block``)."""
     ib = struct.unpack_from("<15I", i_block.ljust(60, b"\x00")[:60])
@@ -792,7 +786,6 @@ def _ext2_dir_blocks_bytes(
                 inodes_count=inodes_count,
                 i_blocks=i_blocks,
                 i_mode=i_mode,
-                cmdb_recover=cmdb_recover,
             )
         else:
             blk = _ext2_direct_logical_block(raw_blk, last_block=last_block)

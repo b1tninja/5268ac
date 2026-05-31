@@ -97,7 +97,7 @@ python -m paceflash ls --flash "PACE …BIN" --debug --json
 | **ext2** | Dissect mount; **`read_model`** often **`ntl_rw_chain_replay`** on 532678 captures |
 | **SquashFS** | Embedded in ext2 files (**`sys1/rootimage.img`**) — not raw **`hsqs`** on the TL partition |
 
-**CMDB** under **`cm/`** is plain XML on disk; bad **`cat`** output is usually stale inode extents — **`boardfs.cmdb_extent_walker`** recovery when needed. See **[`reference/cmdb_security.md`](../reference/cmdb_security.md)** before publishing extracts.
+**CMDB** under **`cm/`** is plain XML on disk. See **[`reference/cmdb_security.md`](../reference/cmdb_security.md)** before publishing extracts.
 
 ---
 

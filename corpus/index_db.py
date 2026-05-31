@@ -483,14 +483,28 @@ def classify_pkgstream_collection(
     )
 
 
-def iter_pkgstreams_under(root: Path) -> Iterator[Path]:
-    """Yield all ``*.pkgstream`` files under *root*, sorted by relative path."""
+def iter_pkgstreams_under(
+    root: Path,
+    *,
+    path_substrings: Optional[Sequence[str]] = None,
+) -> Iterator[Path]:
+    """Yield all ``*.pkgstream`` files under *root*, sorted by relative path.
+
+    When *path_substrings* is set, only paths whose mirror-relative POSIX path
+    contains at least one substring (case-sensitive) are included.
+    """
     root = Path(root).resolve()
+    filters = [s for s in (path_substrings or []) if s]
     paths: List[Path] = []
     for dirpath, _dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
         for name in filenames:
             if name.lower().endswith(".pkgstream"):
-                paths.append(Path(dirpath) / name)
+                path = Path(dirpath) / name
+                if filters:
+                    rel = path.relative_to(root).as_posix()
+                    if not any(sub in rel for sub in filters):
+                        continue
+                paths.append(path)
     paths.sort(key=lambda p: p.relative_to(root).as_posix().lower())
     yield from paths
 
@@ -500,6 +514,7 @@ def plan_pkgstream_collections(
     *,
     collection_prefix: str = "pkgstream:",
     unknown_version: str = "unknown",
+    path_substrings: Optional[Sequence[str]] = None,
 ) -> List[PkgstreamCollectionPlan]:
     """Plan all pkgstream collection slugs under a mirror/root directory.
 
@@ -516,7 +531,7 @@ def plan_pkgstream_collections(
             collection_prefix=collection_prefix,
             unknown_version=unknown_version,
         )
-        for p in iter_pkgstreams_under(root)
+        for p in iter_pkgstreams_under(root, path_substrings=path_substrings)
     ]
     groups: dict[str, list[PkgstreamCollectionPlan]] = {}
     for item in raw:
@@ -4640,14 +4655,20 @@ def build_index_from_pkgstream_root(
     gitleaks_bin: str = "gitleaks",
     display_base: Optional[Path] = None,
     pkgstream_version_order: str = "path",
+    pkgstream_path_substrings: Optional[Sequence[str]] = None,
     progress: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     """Index every pkgstream under a root directory, optionally grouping by detected version."""
     root = Path(root).resolve()
     work_base = Path(work_base).resolve()
     display_base = Path(display_base).resolve() if display_base is not None else _REPO_ROOT
+    path_filters = [s for s in (pkgstream_path_substrings or []) if s]
     if group_by_version:
-        plan = plan_pkgstream_collections(root, collection_prefix=collection_prefix)
+        plan = plan_pkgstream_collections(
+            root,
+            collection_prefix=collection_prefix,
+            path_substrings=path_filters or None,
+        )
     else:
         slug = collection_slug or root.name
         norm_slug = normalize_collection_slug(slug)
@@ -4662,11 +4683,14 @@ def build_index_from_pkgstream_root(
                 version_source="explicit-root",
                 internal_candidates=[],
             )
-            for p in iter_pkgstreams_under(root)
+            for p in iter_pkgstreams_under(root, path_substrings=path_filters or None)
         ]
 
     if not plan:
-        return {"ok": False, "error": f"no .pkgstream files under {root}", "parts": []}
+        detail = f"no .pkgstream files under {root}"
+        if path_filters:
+            detail += f" matching path substring(s): {', '.join(path_filters)!r}"
+        return {"ok": False, "error": detail, "parts": []}
 
     plan = sort_pkgstream_plan(plan, version_order=pkgstream_version_order)
 

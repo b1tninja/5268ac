@@ -32,13 +32,11 @@ _VERSION_EXT2_CANDIDATES: tuple[tuple[str, str], ...] = (
     ("sys1/component.txt", "active_component"),
     ("sys1/version.txt", "active_version"),
     ("sys2/component.txt", "staging_component"),
-    ("sys2/version.txt", "staging_version"),
-)
+    ("sys2/version.txt", "staging_version"))
 
 _PARAMTOOL_KEYS = (
     "gw:trust_engcert",
-    "gw:trust_2sp_cn",
-)
+    "gw:trust_2sp_cn")
 
 # Ghidra /usr/lib/libboard.so.0.0.0 (att-5268 11.5.1.532678) — GP-relative path tables
 LIBBOARD_VERSION_PATHS: dict[str, Any] = {
@@ -72,12 +70,10 @@ LIBBOARD_VERSION_PATHS: dict[str, Any] = {
 
 _TLPART_UPGSTATE = re.compile(
     rb'<TABLE N="mgmt_upgstate">.{0,12000}?</TABLE>',
-    re.DOTALL,
-)
+    re.DOTALL)
 
 _VERSION_LINE_RE = re.compile(
-    r"^\s*(\d+)\.(\d+)\.(\d+)\.(\d+)\s*$",
-)
+    r"^\s*(\d+)\.(\d+)\.(\d+)\.(\d+)\s*$")
 
 
 def parse_dotted_version_quad(text: str) -> dict[str, Any]:
@@ -120,7 +116,6 @@ def _read_ext2_text(
     nand_translate: bool,
     nand_translate_mode: str,
     bbm_chain_aware: bool,
-    cmdb_recover: bool,
 ) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "ext2_path": rel_path,
@@ -132,14 +127,12 @@ def _read_ext2_text(
             cmdline,
             nand_translate=nand_translate,
             nand_translate_mode=nand_translate_mode,  # type: ignore[arg-type]
-            bbm_chain_aware=bbm_chain_aware,
-        ) as vol:
+            bbm_chain_aware=bbm_chain_aware) as vol:
             data = read_ext2_regular_file(
                 vol.slice_bytes,
                 rel_path,
                 sb_off=vol.sb_off,
                 access=vol.access,
-                cmdb_recover=cmdb_recover,
             )
     except FileNotFoundError:
         entry["ok"] = False
@@ -192,8 +185,7 @@ def _try_cmdb_upgrade_pkgs(
     nand_translate: bool,
     nand_translate_mode: str,
     bbm_chain_aware: bool,
-    paths: tuple[str, ...],
-) -> list[dict[str, Any]]:
+    paths: tuple[str, ...]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for rel in paths:
         entry: dict[str, Any] = {"path": rel, "source": "ext2_opentla4"}
@@ -203,15 +195,12 @@ def _try_cmdb_upgrade_pkgs(
                 cmdline,
                 nand_translate=nand_translate,
                 nand_translate_mode=nand_translate_mode,  # type: ignore[arg-type]
-                bbm_chain_aware=bbm_chain_aware,
-            ) as vol:
+                bbm_chain_aware=bbm_chain_aware) as vol:
                 data = read_ext2_regular_file(
                     vol.slice_bytes,
                     rel,
                     sb_off=vol.sb_off,
-                    access=vol.access,
-                    cmdb_recover=True,
-                )
+                    access=vol.access)
         except FileNotFoundError:
             entry["ok"] = False
             entry["error"] = "not found"
@@ -284,8 +273,7 @@ def dump_board_info(
     bbm_chain_aware: bool = False,
     redact: bool = False,
     include_tlpart_scan: bool = True,
-    cmdb_paths: tuple[str, ...] | None = None,
-) -> dict[str, Any]:
+    cmdb_paths: tuple[str, ...] | None = None) -> dict[str, Any]:
     """Aggregate board identity + firmware version sources from a flash dump."""
     p = Path(flash_path).expanduser().resolve()
     warnings: list[str] = []
@@ -301,8 +289,7 @@ def dump_board_info(
         cmdline=cmdline,
         nand_translate=nand_translate,
         nand_translate_mode=nand_translate_mode,
-        redact=redact,
-    )
+        redact=redact)
     out["factory"] = fac_doc.get("factory")
     out["loader_partition"] = fac_doc.get("loader_partition")
     for w in fac_doc.get("warnings") or []:
@@ -329,8 +316,7 @@ def dump_board_info(
         nand_translate=nand_translate,
         nand_translate_mode=nand_translate_mode,
         redact=redact,
-        include_p12_b64=False,
-    )
+        include_p12_b64=False)
     out["paramtool_ok"] = pt_doc.get("ok")
     if pt_doc.get("ok"):
         all_params = pt_doc.get("params") or {}
@@ -355,9 +341,7 @@ def dump_board_info(
                 cmdline=cmdline,
                 nand_translate=nand_translate,
                 nand_translate_mode=nand_translate_mode,
-                bbm_chain_aware=bbm_chain_aware,
-                cmdb_recover=False,
-            )
+                bbm_chain_aware=bbm_chain_aware)
             entry["role"] = role
             version_files.append(entry)
     except Exception as e:
@@ -373,8 +357,7 @@ def dump_board_info(
             nand_translate=nand_translate,
             nand_translate_mode=nand_translate_mode,
             bbm_chain_aware=bbm_chain_aware,
-            paths=paths,
-        )
+            paths=paths)
     except Exception as e:
         warnings.append(f"cmdb ext2: {type(e).__name__}: {e}")
         out["cmdb_ext2"] = []
@@ -425,8 +408,7 @@ def dump_board_info(
             nand_translate_mode=nand_translate_mode,
             bbm_chain_aware=bbm_chain_aware,
             include_tlpart_scan=include_tlpart_scan,
-            cmdb_paths=cmdb_paths,
-        )
+            cmdb_paths=cmdb_paths)
         if out["cellular"].get("qxdm_passcode"):
             out["qxdm_passcode"] = out["cellular"]["qxdm_passcode"]
             out["imei"] = out["cellular"].get("imei")

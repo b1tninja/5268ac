@@ -54,7 +54,6 @@ def _ext2_dir_entries_from_inode(
     dir_inum: int = 0,
     access: Ext2VolumeAccess | None = None,
     cap: int = 4096,
-    cmdb_recover: bool = False,
 ) -> list[tuple[int, str, int]]:
     """Parse directory blocks from inode ``i_block`` (``ext2_readdir`` / ``ext2_get_page``)."""
     last_block = _ext2_last_block(work, sb_off=sb_off)
@@ -84,7 +83,6 @@ def _ext2_dir_entries_from_inode(
         i_blocks=i_blocks,
         i_mode=i_mode,
         access=access,
-        cmdb_recover=cmdb_recover,
     )
     return _ext2_parse_dir_entry(
         data,
@@ -103,7 +101,6 @@ def _ext2_resolve_path_inum(
     root_mode: int,
     root_size: int,
     access: Ext2VolumeAccess | None = None,
-    cmdb_recover: bool = False,
 ) -> tuple[int, int, bytes, int]:
     """
     Walk ``rel`` under ``/`` using kernel inode table + ``ext2_dir_entry`` parsing.
@@ -123,7 +120,6 @@ def _ext2_resolve_path_inum(
             sb_off=sb_off,
             dir_inum=inum,
             access=access,
-            cmdb_recover=cmdb_recover,
         )
         match = next((e for e in entries if e[1] == part), None)
         if match is None:
@@ -150,7 +146,6 @@ def list_ext2_directory(
     cap: int = 4096,
     include_dot: bool = False,
     access: Ext2VolumeAccess | None = None,
-    cmdb_recover: bool = False,
 ) -> list[dict[str, Any]]:
     """
     List one directory on the ext2 volume.
@@ -179,7 +174,6 @@ def list_ext2_directory(
                 root_mode=root_mode,
                 root_size=root_size,
                 access=access,
-                cmdb_recover=cmdb_recover,
             )
         except NotADirectoryError:
             raise NotADirectoryError(rel or "/")
@@ -204,7 +198,6 @@ def list_ext2_directory(
         dir_inum=_inum,
         access=access,
         cap=cap,
-        cmdb_recover=cmdb_recover,
     )
     is_dir = stat.S_ISDIR(mode)
     htree = _ext2_feature_htree(work_view, sb)
@@ -221,7 +214,6 @@ def list_ext2_directory(
         i_blocks=i_blocks,
         i_mode=mode,
         access=access,
-        cmdb_recover=cmdb_recover,
     )
     if not entries and _ext2_dir_data_opaque(dir_data, htree=htree):
         raise Ext2DirectoryOpaqueError(
@@ -253,15 +245,10 @@ def list_ext2_directory(
     return rows
 
 
-def default_extent_merge_for_path(path: str) -> bool:
-    """Opt-in pkgstream/gzip repair for install images (forensic / explicit oracle)."""
-    return False
-
-
 def default_shadow_promote_for_path(path: str) -> bool:
-    """Promote deleted-orphan shadow inode blocks for opentla4 install images."""
-    base = normalize_ext2_path(path).rsplit("/", 1)[-1]
-    return base == "uImage"
+    """Deprecated — PACE capture reads enable shadow promotion via volume layout."""
+    del path
+    return False
 
 
 def read_ext2_regular_file(
@@ -270,10 +257,7 @@ def read_ext2_regular_file(
     *,
     sb_off: int | None = None,
     access: Ext2VolumeAccess | None = None,
-    cmdb_recover: bool = False,
-    extent_merge: bool | None = None,
     shadow_promote: bool | None = None,
-    oracle_body: bytes | None = None,
 ) -> bytes:
     """Read a regular file from the ext2 volume; raises if missing or not a file."""
     rel = normalize_ext2_path(path)
@@ -297,7 +281,6 @@ def read_ext2_regular_file(
             root_mode=root_mode,
             root_size=root_size,
             access=access,
-            cmdb_recover=cmdb_recover,
         )
     except NotADirectoryError as e:
         raise IsADirectoryError(rel) from e
@@ -306,8 +289,6 @@ def read_ext2_regular_file(
     if not stat.S_ISREG(mode):
         raise OSError(f"not a regular file: {rel!r}")
     i_blocks = _ext2_read_inode_i_blocks(work_view, sb, _inum, access=access)
-    if extent_merge is None:
-        extent_merge = default_extent_merge_for_path(rel)
     if shadow_promote is None:
         shadow_promote = default_shadow_promote_for_path(rel)
     data = _ext2_read_file_bytes(
@@ -318,15 +299,12 @@ def read_ext2_regular_file(
         i_blocks=i_blocks,
         i_mode=mode,
         access=access,
-        cmdb_recover=cmdb_recover,
-        extent_merge=extent_merge,
         rel_path=rel,
         live_inum=_inum,
-        oracle_body=oracle_body,
         shadow_promote=shadow_promote,
     )
     pace = _ext2_volume_uses_pace_inode_layout(work_view, sb)
-    if not cmdb_recover and not pace and inode_size and len(data) < inode_size:
+    if not pace and inode_size and len(data) < inode_size:
         raise OSError(
             f"ext2 read short for {rel!r}: got {len(data)} bytes, inode size {inode_size}"
         )
@@ -339,7 +317,6 @@ def read_ext2_regular_file_by_inum(
     *,
     sb_off: int | None = None,
     access: Ext2VolumeAccess | None = None,
-    extent_merge: bool = False,
 ) -> bytes:
     """Read a regular file by inode number (forensic / orphan-inode probes)."""
     sb = sb_off if sb_off is not None else resolve_mountable_ext2_superblock_offset(slice_data)
@@ -361,7 +338,6 @@ def read_ext2_regular_file_by_inum(
         i_blocks=i_blocks,
         i_mode=mode,
         access=access,
-        extent_merge=extent_merge,
         rel_path=f"inode:{inum}",
         live_inum=inum,
     )

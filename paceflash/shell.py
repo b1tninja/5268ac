@@ -18,23 +18,19 @@ _LS_FLAGS = ("-a", "--all", "-l", "--long")
 from boardfs import (
     apply_chain_aware_virtual_tl_scan,
     assemble_opentla4_volume,
-    temporary_registry_from_physical_nand,
-)
+    temporary_registry_from_physical_nand)
 from boardfs.ext2_dissect import resolve_mountable_ext2_superblock_offset
 from boardfs.ext2_path import (
     Ext2DirectoryOpaqueError,
     ext2_file_map_report_for_path,
     list_ext2_directory,
-    read_ext2_regular_file,
-)
-from paceflash.uimage_oracle import resolve_uimage_oracle
+    read_ext2_regular_file)
 from opentl.driver import TranslateMode
 
 from paceflash.flash_session import (
     Opentla4Ext2Volume,
     _apply_chain_aware_bbm_if_needed,
-    _opentla4_volume_access,
-)
+    _opentla4_volume_access)
 
 
 @dataclass
@@ -88,8 +84,7 @@ class Ext2ShellSession:
         config: ShellConfig,
         vol: Opentla4Ext2Volume,
         *,
-        _registry_ctx: Any = None,
-    ) -> None:
+        _registry_ctx: Any = None) -> None:
         self.config = config
         self.vol = vol
         self.cwd: str = ""
@@ -113,8 +108,7 @@ class Ext2ShellSession:
         ctx = temporary_registry_from_physical_nand(
             config.flash_path,
             line,
-            translate_mode=config.nand_translate_mode,
-        )
+            translate_mode=config.nand_translate_mode)
         reg, man, ot = ctx.__enter__()
         _apply_chain_aware_bbm_if_needed(
             reg, man, ot, bbm_chain_aware=config.bbm_chain_aware, tl_slice=config.tl_slice
@@ -134,8 +128,7 @@ class Ext2ShellSession:
             sb_off=sb,
             read_model=assembled.read_model,
             slice_name=config.tl_slice,
-            access=_opentla4_volume_access(reg, assembled, slice_name=config.tl_slice),
-        )
+            access=_opentla4_volume_access(reg, assembled, slice_name=config.tl_slice))
         return cls(config, vol, _registry_ctx=ctx)
 
     def _resolve(self, user_path: str) -> str:
@@ -145,16 +138,14 @@ class Ext2ShellSession:
         self,
         rel_dir: str,
         *,
-        dirs_only: bool = False,
-    ) -> list[tuple[str, str]]:
+        dirs_only: bool = False) -> list[tuple[str, str]]:
         """Return ``(name, kind)`` entries under ``rel_dir`` (volume-relative)."""
         try:
             rows = list_ext2_directory(
                 self.vol.slice_bytes,
                 rel_dir,
                 sb_off=self.vol.sb_off,
-                access=self.vol.access,
-            )
+                access=self.vol.access)
         except (NotADirectoryError, FileNotFoundError):
             return []
         except (OSError, ValueError, Ext2DirectoryOpaqueError):
@@ -202,8 +193,7 @@ class Ext2ShellSession:
         line: str,
         text: str,
         *,
-        prefix_end: int | None = None,
-    ) -> list[str]:
+        prefix_end: int | None = None) -> list[str]:
         """All completion strings for the active token (each must start with ``text``)."""
         if prefix_end is None:
             try:
@@ -250,8 +240,7 @@ class Ext2ShellSession:
                 target,
                 sb_off=self.vol.sb_off,
                 cap=1,
-                access=self.vol.access,
-            )
+                access=self.vol.access)
         except NotADirectoryError:
             print(f"paceflash: not a directory: {display_path(target)}", file=sys.stderr)
             return 1
@@ -264,7 +253,6 @@ class Ext2ShellSession:
     def cmd_ls(self, argv: list[str]) -> int:
         show_all = False
         long_fmt = False
-        cmdb_recover = False
         paths: list[str] = []
         i = 0
         while i < len(argv):
@@ -275,10 +263,6 @@ class Ext2ShellSession:
                 continue
             if a in ("-l", "--long"):
                 long_fmt = True
-                i += 1
-                continue
-            if a == "--cmdb-recover":
-                cmdb_recover = True
                 i += 1
                 continue
             if a.startswith("-"):
@@ -298,7 +282,6 @@ class Ext2ShellSession:
                     sb_off=self.vol.sb_off,
                     include_dot=show_all,
                     access=self.vol.access,
-                    cmdb_recover=cmdb_recover,
                 )
             except NotADirectoryError:
                 print(f"paceflash: not a directory: {display_path(rel)}", file=sys.stderr)
@@ -322,41 +305,22 @@ class Ext2ShellSession:
         return exit_code
 
     def cmd_cat(self, argv: list[str]) -> int:
-        cmdb_recover = False
-        extent_merge: bool | None = None
         paths: list[str] = []
         for a in argv:
-            if a == "--cmdb-recover":
-                cmdb_recover = True
-            elif a == "--no-extent-merge":
-                extent_merge = False
-            elif a.startswith("-"):
+            if a.startswith("-"):
                 print(f"paceflash: cat: unknown option: {a}", file=sys.stderr)
                 return 1
-            else:
-                paths.append(a)
+            paths.append(a)
         if len(paths) != 1:
-            print(
-                "paceflash: usage: cat [--cmdb-recover] [--no-extent-merge] PATH",
-                file=sys.stderr,
-            )
+            print("paceflash: usage: cat PATH", file=sys.stderr)
             return 1
         rel = self._resolve(paths[0])
         try:
-            use_merge = extent_merge
-            if use_merge is None:
-                from boardfs.ext2_path import default_extent_merge_for_path
-
-                use_merge = default_extent_merge_for_path(rel)
-            oracle = resolve_uimage_oracle() if use_merge else None
             data = read_ext2_regular_file(
                 self.vol.slice_bytes,
                 rel,
                 sb_off=self.vol.sb_off,
                 access=self.vol.access,
-                cmdb_recover=cmdb_recover,
-                extent_merge=extent_merge,
-                oracle_body=oracle,
             )
         except IsADirectoryError:
             print(f"paceflash: is a directory: {display_path(rel)}", file=sys.stderr)
@@ -364,8 +328,7 @@ class Ext2ShellSession:
         except EOFError as e:
             print(
                 f"paceflash: ext2 read failed for {display_path(rel)}: {e}",
-                file=sys.stderr,
-            )
+                file=sys.stderr)
             return 1
         except (FileNotFoundError, OSError) as e:
             print(f"paceflash: {type(e).__name__}: {e}", file=sys.stderr)
@@ -387,8 +350,7 @@ class Ext2ShellSession:
         if len(paths) != 1:
             print(
                 "paceflash: usage: ext2map [-n N] PATH",
-                file=sys.stderr,
-            )
+                file=sys.stderr)
             return 1
         rel = self._resolve(paths[0])
         try:
@@ -396,8 +358,7 @@ class Ext2ShellSession:
                 self.vol.slice_bytes,
                 rel,
                 sb_off=self.vol.sb_off,
-                max_blocks=max_blocks,
-            )
+                max_blocks=max_blocks)
         except IsADirectoryError:
             print(f"paceflash: is a directory: {display_path(rel)}", file=sys.stderr)
             return 1
@@ -414,8 +375,7 @@ class Ext2ShellSession:
   ls [-a] [-l] [PATH...]   list directory (default .)
   cd [PATH]                change directory (default .)
   pwd                      print working directory
-  cat [--cmdb-recover] PATH   kernel-faithful read (default); --cmdb-recover for CMDB extent walk
-  ls [--cmdb-recover] ...     list directory (use --cmdb-recover for PACE /cm dentry skew)
+  cat PATH                 read file (PACE capture read: shadow promote + stale extent recovery)
   ext2map [-n N] PATH      kernel-aligned ext2 block map (inode vs file blocks)
   help                     this message
   exit, quit               leave the shell"""
@@ -484,8 +444,7 @@ def setup_readline_completion(session: Ext2ShellSession) -> bool:
             print(
                 "paceflash: tab completion unavailable (install pyreadline3: "
                 'pip install -e ".[shell]" or pip install pyreadline3)',
-                file=sys.stderr,
-            )
+                file=sys.stderr)
         return False
 
     cache: list[str] = []
@@ -509,16 +468,14 @@ def run_interactive(
     session: Ext2ShellSession,
     *,
     stdin: TextIO | None = None,
-    stdout: TextIO | None = None,
-) -> int:
+    stdout: TextIO | None = None) -> int:
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     cfg = session.config
     print(
         f"paceflash: {cfg.flash_path} slice={session.vol.slice_name!r} "
         f"read_model={session.vol.read_model!r}",
-        file=sys.stderr,
-    )
+        file=sys.stderr)
     print(_SHELL_HELP, file=stdout)
 
     readline_enabled = False
@@ -527,8 +484,7 @@ def run_interactive(
         if not readline_enabled and sys.platform != "win32":
             print(
                 "paceflash: tab completion unavailable (Python built without readline support)",
-                file=sys.stderr,
-            )
+                file=sys.stderr)
 
     try:
         while True:

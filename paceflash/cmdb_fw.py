@@ -12,8 +12,7 @@ from paceflash.cmdb_parse import (
     list_table_names,
     parse_tables,
     read_cmdb_text,
-    table_index,
-)
+    table_index)
 from paceflash.flash_session import open_opentla4_ext2
 from paceflash.http_auth import _CMDB_EXT2_PATHS
 
@@ -32,13 +31,11 @@ _DEFAULT_TABLES = (
     "firewall_level",
     "fw6_rule",
     "fw6_chain",
-    "bind",
-)
+    "bind")
 
 _TLPART_CM_CHUNK = re.compile(
     rb"<CM VERS=.[^<]{0,2000000}?</CM>",
-    re.DOTALL,
-)
+    re.DOTALL)
 
 
 def _intish(value: Any) -> int | None:
@@ -162,8 +159,7 @@ def parse_cmdb_fw_document(
     text: str,
     *,
     tables: tuple[str, ...] | None = None,
-    include_catalog: bool = False,
-) -> dict[str, Any]:
+    include_catalog: bool = False) -> dict[str, Any]:
     want = set(tables or _DEFAULT_TABLES)
     if include_catalog:
         want.update({"apps", "ports"})
@@ -191,8 +187,7 @@ def _parse_cmdb_bytes(
     *,
     source: str,
     tables: tuple[str, ...] | None,
-    include_catalog: bool,
-) -> dict[str, Any]:
+    include_catalog: bool) -> dict[str, Any]:
     if not data.strip().startswith(b"<?xml") and b"<CM" not in data[:8192]:
         return {"source": source, "ok": False, "error": "not CMDB XML", "bytes": len(data)}
     text, enc = read_cmdb_text(data)
@@ -205,8 +200,7 @@ def scan_tlpart_cmdb_fw(
     tlpart: bytes,
     *,
     tables: tuple[str, ...] | None = None,
-    include_catalog: bool = False,
-) -> list[dict[str, Any]]:
+    include_catalog: bool = False) -> list[dict[str, Any]]:
     """Find embedded ``<CM …>`` documents in assembled tlpart that contain firewall tables."""
     found: list[dict[str, Any]] = []
     for i, m in enumerate(_TLPART_CM_CHUNK.finditer(tlpart)):
@@ -244,16 +238,14 @@ def _read_cmdb_from_ext2(
     bbm_chain_aware: bool,
     paths: tuple[str, ...],
     tables: tuple[str, ...] | None,
-    include_catalog: bool,
-) -> list[dict[str, Any]]:
+    include_catalog: bool) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     with open_opentla4_ext2(
         flash_path,
         cmdline,
         nand_translate=nand_translate,
         nand_translate_mode=nand_translate_mode,  # type: ignore[arg-type]
-        bbm_chain_aware=bbm_chain_aware,
-    ) as vol:
+        bbm_chain_aware=bbm_chain_aware) as vol:
         for rel in paths:
             entry: dict[str, Any] = {"path": rel, "source": "ext2_opentla4"}
             try:
@@ -261,9 +253,7 @@ def _read_cmdb_from_ext2(
                     vol.slice_bytes,
                     rel,
                     sb_off=vol.sb_off,
-                    access=vol.access,
-                    cmdb_recover=True,
-                )
+                    access=vol.access)
             except FileNotFoundError:
                 entry["ok"] = False
                 entry["error"] = "not found"
@@ -278,8 +268,7 @@ def _read_cmdb_from_ext2(
                 data,
                 source=rel,
                 tables=tables,
-                include_catalog=include_catalog,
-            )
+                include_catalog=include_catalog)
             entry.update(parsed)
             results.append(entry)
     return results
@@ -296,8 +285,7 @@ def dump_cmdb_fw(
     include_tlpart_scan: bool = True,
     cmdb_paths: tuple[str, ...] | None = None,
     tables: tuple[str, ...] | None = None,
-    include_catalog: bool = False,
-) -> dict[str, Any]:
+    include_catalog: bool = False) -> dict[str, Any]:
     warnings: list[str] = []
     out: dict[str, Any] = {"ok": True, "warnings": warnings, "sources": []}
 
@@ -308,8 +296,7 @@ def dump_cmdb_fw(
             data,
             source=str(p),
             tables=tables,
-            include_catalog=include_catalog,
-        )
+            include_catalog=include_catalog)
         out["sources"] = [doc]
         out["flash"] = None
         out["cmdb_path"] = str(p)
@@ -328,8 +315,7 @@ def dump_cmdb_fw(
                 bbm_chain_aware=bbm_chain_aware,
                 paths=paths,
                 tables=tables,
-                include_catalog=include_catalog,
-            )
+                include_catalog=include_catalog)
         except Exception as e:
             warnings.append(f"ext2 CMDB read: {type(e).__name__}: {e}")
             out["sources"] = []
@@ -350,8 +336,7 @@ def dump_cmdb_fw(
                 out["tlpart_cmdb"] = scan_tlpart_cmdb_fw(
                     tlpart,
                     tables=tables,
-                    include_catalog=include_catalog,
-                )
+                    include_catalog=include_catalog)
             except Exception as e:
                 warnings.append(f"tlpart CMDB scan: {type(e).__name__}: {e}")
                 out["tlpart_cmdb"] = []

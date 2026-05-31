@@ -68,25 +68,25 @@ def _bbm_plus_chunks_at_gvirt(
     vb = gvirt // erase
     vo = gvirt % erase
     ppage = vo // PAGE_BYTES
-    v2p = getattr(access.ntl.block_map, "virt_to_phys_block", None)
-    if not v2p or vb < 0 or vb >= len(v2p):
+    from opentl.pace_cluster import bbm_and_plus_chunks_at_gvirt
+
+    pair = bbm_and_plus_chunks_at_gvirt(
+        access.ntl.session.linear_prefix,
+        access.ntl.block_map,
+        gvirt,
+        blksz=blksz,
+        page_bytes=PAGE_BYTES,
+    )
+    if pair is None:
+        return None
+    bbm_chunk, plus_chunk = pair
+    v2p = access.ntl.block_map.virt_to_phys_block
+    if vb < 0 or vb >= len(v2p):
         return None
     phys_blk = int(v2p[vb])
     if phys_blk <= 0:
         return None
-    prefix = access.ntl.session.linear_prefix
-    bbm_off = phys_blk * erase + vo
-    if bbm_off + blksz > len(prefix):
-        return None
-    plus_off = bbm_off + PAGE_BYTES
-    if plus_off + blksz > len(prefix):
-        return None
-    return (
-        prefix[bbm_off : bbm_off + blksz],
-        prefix[plus_off : plus_off + blksz],
-        phys_blk,
-        ppage,
-    )
+    return bbm_chunk, plus_chunk, phys_blk, ppage
 
 
 def tag64_plus2048_for_gvirt(
@@ -187,7 +187,7 @@ def tag64_plus2048_chunk_for_fs_block(access: Ext2VolumeAccess, block_num: int) 
 
 
 def apply_tag64_carrier_overlay(access: Ext2VolumeAccess, block_num: int) -> bytes:
-    """Legacy fs-block overlay (prefer block-map reads in :mod:`boardfs.ext2_extent_merge`)."""
+    """Legacy fs-block overlay (prefer block-map reads in :mod:`boardfs.ext2_shadow_promote`)."""
     chunk = read_slice_block(access, block_num)
     if not getattr(access, "tag64_carrier_overlay", False):
         return chunk

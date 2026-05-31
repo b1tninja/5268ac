@@ -1771,6 +1771,9 @@ def cmd_build_index(repo: Path, args: argparse.Namespace) -> int:
                 )
             else:
                 prog_root(f"# collection: {idx.normalize_collection_slug(collection_raw or root.name)}")
+            path_filters = [s for s in getattr(args, "pkgstream_path_substring", []) or [] if s]
+            if path_filters:
+                prog_root(f"# path filter: {', '.join(path_filters)!r}")
 
             res = idx.build_index_from_pkgstream_root(
                 conn,
@@ -1796,6 +1799,7 @@ def cmd_build_index(repo: Path, args: argparse.Namespace) -> int:
                 sbom_format=args.sbom_format,
                 display_base=repo,
                 pkgstream_version_order=getattr(args, "pkgstream_version_order", "path"),
+                pkgstream_path_substrings=path_filters or None,
                 progress=prog_root,
                 **secret_kw,
             )
@@ -2405,6 +2409,14 @@ def main() -> int:
         default="path",
         help="With --pkgstream-root: order carriers before indexing. "
         "desc = highest firmware version first (Z→A); default = lexicographic relative path.",
+    )
+    ap.add_argument(
+        "--pkgstream-path-substring",
+        metavar="TEXT",
+        action="append",
+        default=[],
+        help="With --pkgstream-root: only index pkgstreams whose mirror-relative path contains "
+        "TEXT (repeatable; any match). Example: --pkgstream-path-substring 00D09E",
     )
     ap.add_argument(
         "--sbom",

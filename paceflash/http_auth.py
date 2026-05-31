@@ -43,8 +43,7 @@ HTTP_AUTH_REALMS: tuple[dict[str, str], ...] = (
         "realm": "N/A",
         "backend": "redirect only",
         "notes": "hurl_conf.xml → /xslt?PAGE=HURL*; auth applies on target XSLT pages",
-    },
-)
+    })
 
 _FACTORY_HTTP_KEYS = frozenset(
     {
@@ -64,16 +63,14 @@ _FACTORY_HTTP_KEYS = frozenset(
 _CMDB_EXT2_PATHS = (
     "cm/cmlegacy.498",
     "cm/cmlegacy.203",
-    "config/cmlegacy.203",
-)
+    "config/cmlegacy.203")
 
 _ROW_RE = re.compile(r'<ROW N="(\d+)">(.*?)</ROW>', re.DOTALL)
 _FIELD_S = re.compile(r'<S N="([^"]+)">([^<]*)</S>')
 _TABLE_USER = re.compile(r'<TABLE N="user">(.*?)</TABLE>', re.DOTALL)
 _TLPART_USER_CHUNK = re.compile(
     rb'<TABLE N="user">.{0,12000}?</TABLE>',
-    re.DOTALL,
-)
+    re.DOTALL)
 
 
 def _fields_from_row(row_xml: str) -> dict[str, str]:
@@ -169,16 +166,14 @@ def _try_read_cmdb_from_ext2(
     bbm_chain_aware: bool,
     redact: bool,
     decode: bool,
-    paths: tuple[str, ...],
-) -> list[dict[str, Any]]:
+    paths: tuple[str, ...]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     with open_opentla4_ext2(
         flash_path,
         cmdline,
         nand_translate=nand_translate,
         nand_translate_mode=nand_translate_mode,  # type: ignore[arg-type]
-        bbm_chain_aware=bbm_chain_aware,
-    ) as vol:
+        bbm_chain_aware=bbm_chain_aware) as vol:
         for rel in paths:
             entry: dict[str, Any] = {"path": rel, "source": "ext2_opentla4"}
             try:
@@ -186,9 +181,7 @@ def _try_read_cmdb_from_ext2(
                     vol.slice_bytes,
                     rel,
                     sb_off=vol.sb_off,
-                    access=vol.access,
-                    cmdb_recover=True,
-                )
+                    access=vol.access)
             except FileNotFoundError:
                 entry["ok"] = False
                 entry["error"] = "not found"
@@ -233,8 +226,7 @@ def dump_http_auth(
     redact: bool = False,
     decode_password_hashes: bool = False,
     include_tlpart_scan: bool = True,
-    cmdb_paths: tuple[str, ...] | None = None,
-) -> dict[str, Any]:
+    cmdb_paths: tuple[str, ...] | None = None) -> dict[str, Any]:
     """
     Collect HTTP-related credentials: loader factory block, ext2 CMDB ``user`` table, tlpart mirrors.
 
@@ -260,8 +252,7 @@ def dump_http_auth(
         cmdline=cmdline,
         nand_translate=nand_translate,
         nand_translate_mode=nand_translate_mode,
-        redact=redact,
-    )
+        redact=redact)
     out["factory"] = fac_doc.get("factory")
     fac = fac_doc.get("factory") or {}
     if fac.get("ok") and isinstance(fac.get("params"), dict):
@@ -283,8 +274,7 @@ def dump_http_auth(
             bbm_chain_aware=bbm_chain_aware,
             redact=redact,
             decode=decode_password_hashes,
-            paths=paths,
-        )
+            paths=paths)
     except Exception as e:
         warnings.append(f"ext2 CMDB read: {type(e).__name__}: {e}")
         out["cmdb_ext2"] = []

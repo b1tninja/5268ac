@@ -2,6 +2,7 @@ FROM python:3.12-slim-bookworm AS runtime-base
 
 ARG SYFT_INSTALL_URL=https://raw.githubusercontent.com/anchore/syft/main/install.sh
 ARG GRYPE_INSTALL_URL=https://raw.githubusercontent.com/anchore/grype/main/install.sh
+ARG GITLEAKS_VERSION=8.24.2
 ARG VMLINUX_TO_ELF_REF=master
 
 LABEL org.opencontainers.image.title="5268ac corpus runtime"
@@ -9,7 +10,8 @@ LABEL org.opencontainers.image.description="Full runtime for 5268ac corpus index
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    OPENTL_FULL_ASSEMBLY=1
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -30,6 +32,8 @@ RUN apt-get update \
         make \
         patch \
         squashfs-tools \
+        squashfuse \
+        fuse \
         tar \
         unzip \
         xz-utils \
@@ -37,10 +41,13 @@ RUN apt-get update \
 
 RUN curl -sSfL "$SYFT_INSTALL_URL" | sh -s -- -b /usr/local/bin \
     && curl -sSfL "$GRYPE_INSTALL_URL" | sh -s -- -b /usr/local/bin \
+    && curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+        | tar xz -C /usr/local/bin gitleaks \
     && syft version \
-    && grype version
+    && grype version \
+    && gitleaks version
 
-COPY tools/pkgstream_mirror.py /usr/local/bin/pkgstream-mirror
+COPY corpus/pkgstream_mirror.py /usr/local/bin/pkgstream-mirror
 RUN sed -i 's/\r$//' /usr/local/bin/pkgstream-mirror \
     && chmod +x /usr/local/bin/pkgstream-mirror
 
@@ -78,6 +85,7 @@ ARG VMLINUX_TO_ELF_REF=master
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
+    OPENTL_FULL_ASSEMBLY=1 \
     PKGSTREAM_MIRROR_ROOT=/opt/pkgstream-mirror/gateway.c01.sbcglobal.net
 
 COPY --from=pkgstream-cache /opt/pkgstream-mirror /opt/pkgstream-mirror
